@@ -1,0 +1,25 @@
+spring:
+  application:
+    name: case-api
+  datasource:
+    # Defaults are for local development; Docker Compose and CI override them with env vars.
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/caseguard}
+    username: ${DB_USER:caseguard}
+    password: ${DB_PASSWORD:caseguard}
+  flyway:
+    # db/seed holds demo data. A production deployment would set only classpath:db/migration.
+    locations: ${FLYWAY_LOCATIONS:classpath:db/migration,classpath:db/seed}
+  jpa:
+    # Flyway owns the schema. Hibernate only CHECKS that entities match it, and never changes it.
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+
+server:
+  port: ${PORT:8081}

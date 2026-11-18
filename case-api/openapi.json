@@ -107,6 +107,44 @@
         }
       }
     },
+    "/orders" : {
+      "get" : {
+        "tags" : [ "order-controller" ],
+        "operationId" : "listOrders",
+        "parameters" : [ {
+          "name" : "X-Tenant-Id",
+          "in" : "header",
+          "description" : "Tenant (company) id from the trusted session",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        }, {
+          "name" : "X-Customer-Id",
+          "in" : "header",
+          "description" : "Customer id from the trusted session",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        } ],
+        "responses" : {
+          "200" : {
+            "description" : "OK",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "type" : "array",
+                  "items" : {
+                    "$ref" : "#/components/schemas/OrderDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/orders/{orderId}" : {
       "get" : {
         "tags" : [ "order-controller" ],

@@ -1,5 +1,5 @@
 # Common commands. Run `make help` to list them.
-.PHONY: help infra up down run test test-api test-worker contract demo-worker demo-relay
+.PHONY: help infra up down run test test-api test-worker test-agent agent-venv e2e chat contract demo-worker demo-relay
 
 help:            ## Show this list
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  make %-12s %s\n", $$1, $$2}'
@@ -16,13 +16,25 @@ down:            ## Stop the stack (data is kept)
 run:             ## Run the Case API locally on http://localhost:8081 (needs `make infra`)
 	cd case-api && ./mvnw -q spring-boot:run
 
-test: test-api test-worker   ## Run all tests (needs `make infra`)
+test: test-api test-worker test-agent   ## Run all tests (needs `make infra`)
 
 test-api:        ## Case API tests
 	cd case-api && ./mvnw -B test
 
 test-worker:     ## Escalation worker tests
 	cd escalation-worker && ./mvnw -B test
+
+agent-venv:      ## Create the agent's Python virtualenv
+	cd agent && python3 -m venv .venv && .venv/bin/pip install -q -e ".[dev]"
+
+test-agent:      ## Agent tests against the fake Case API (fast, no services needed)
+	cd agent && .venv/bin/python -m pytest -q
+
+e2e:             ## Agent against the REAL Case API + Kafka + worker (needs `make infra`)
+	scripts/e2e-agent.sh
+
+chat:            ## Chat with the agent in the terminal (needs `make up` or a running Case API)
+	cd agent && .venv/bin/python -m caseguard_agent.app
 
 contract:        ## Regenerate case-api/openapi.json after an intentional API change
 	cd case-api && UPDATE_CONTRACT=true ./mvnw -B test -Dtest=ApiContractTest

@@ -104,13 +104,63 @@ jobs:
       - name: Relay crashes after publish, before marking outbox row
         run: scripts/demo-crash-replay.sh relay
 
+  agent:
+    # Fast agent tests against the fake Case API (no services).
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.12", cache: pip, cache-dependency-path: agent/pyproject.toml }
+      - run: pip install -e ".[dev]"
+      - run: python -m pytest -q
+
+  agent-e2e:
+    # The agent against the REAL Case API, Kafka and worker.
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: caseguard
+          POSTGRES_PASSWORD: caseguard
+          POSTGRES_DB: caseguard_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U caseguard"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      kafka:
+        image: apache/kafka:4.3.2
+        ports: ["9092:9092"]
+        options: >-
+          --health-cmd "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092"
+          --health-interval 5s --health-timeout 10s --health-retries 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with: { distribution: temurin, java-version: "21", cache: maven }
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.12", cache: pip, cache-dependency-path: agent/pyproject.toml }
+      - name: Install agent
+        run: pip install -e "agent[dev]"
+      - name: Build jars
+        run: |
+          (cd case-api && ./mvnw -B -q package -DskipTests)
+          (cd escalation-worker && ./mvnw -B -q package -DskipTests)
+      - name: End-to-end tests
+        env:
+          PYTHON: python
+        run: scripts/e2e-agent.sh
+
   docker-compose:
     # Builds both images and runs the full stack: request → relay → Kafka → worker → task.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - name: Start the stack
-        run: docker compose up -d --build --wait postgres kafka case-api
+        run: docker compose up -d --build --wait postgres kafka case-api agent
       - name: Start the worker
         run: docker compose up -d escalation-worker
       - name: End-to-end smoke test
@@ -127,3 +177,12 @@ jobs:
           done
           docker compose logs case-api escalation-worker | tail -50
           exit 1
+      - name: Chat with the agent container
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf -X POST localhost:8090/chat -H "Content-Type: application/json" \
+              -d '{"session":"demo-asha","message":"Order 1043 is late, can you escalate?"}' > reply.json && break
+            sleep 2
+          done
+          cat reply.json
+          grep -q escalation_declined reply.json

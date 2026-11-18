@@ -94,6 +94,16 @@ class OwnershipTest extends ApiTestBase {
         .andExpect(status().isBadRequest());
   }
 
+  @Test
+  @DisplayName("listing orders returns only the caller's own orders")
+  void listOrdersIsOwnershipFiltered() throws Exception {
+    getAs("acme", "cust-A1", "/orders")
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.length()").value(4))                  // 1042, 1043, 1050, 1099
+        .andExpect(jsonPath("$[?(@.id == '2001')]").isEmpty())       // globex
+        .andExpect(jsonPath("$[?(@.id == '1200')]").isEmpty());      // cust-A2
+  }
+
   // ---------- cases ----------
 
   @Test

@@ -1,5 +1,6 @@
 package dev.caseguard.caseapi.orders;
 
+import java.util.List;
 import java.util.Optional;
 import org.springframework.data.jpa.repository.JpaRepository;
 
@@ -12,4 +13,7 @@ public interface OrderRepository extends JpaRepository<CustomerOrder, String> {
    * Someone else's order simply isn't found.
    */
   Optional<CustomerOrder> findByIdAndTenantIdAndCustomerId(String id, String tenantId, String customerId);
+
+  /** All of the caller's orders, newest promise first. */
+  List<CustomerOrder> findByTenantIdAndCustomerIdOrderByPromisedDateDesc(String tenantId, String customerId);
 }

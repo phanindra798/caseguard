@@ -62,3 +62,15 @@ services:
     depends_on:
       case-api: { condition: service_started }   # the Case API runs the DB migrations
       kafka: { condition: service_healthy }
+
+  agent:
+    build:
+      context: .
+      dockerfile: agent/Dockerfile
+    environment:
+      CASE_API_URL: http://case-api:8081
+      CASEGUARD_LLM: scripted          # set to "live" + CASEGUARD_MODEL to use a real model
+    ports:
+      - "8090:8090"
+    depends_on:
+      case-api: { condition: service_started }

@@ -21,8 +21,46 @@ CaseGuard pairs an agent that **verifies before it claims** with a backend that 
 | 1.1 | Case API: orders and cases with tenant/customer ownership checks | ✅ Done |
 | 1.2 | Idempotent escalation endpoint + transactional outbox, concurrency and atomicity tests, OpenAPI contract | ✅ Done |
 | 1.3 | Outbox relay → Kafka → worker with dedupe, dead-letter topic, **real crash-and-replay demo** | ✅ Done |
-| 1.4 | LangGraph agent with planner, verify, reconcile | ⏳ Next |
-| 1.5 | Regression harness + CI | |
+| 1.4 | LangGraph agent: planner loop, eligibility in code, operation ids, reconcile, verify-before-claim | ✅ Done |
+| 1.5 | Regression harness: YAML scenarios, fault injection, claim checker | ⏳ Next |
+
+## The agent
+
+A LangGraph state machine. **The LLM decides what to find out and what to propose; code decides what is allowed and what is true.**
+
+```
+guardrail → plan ⇄ read tools (LLM chooses: list_orders, get_order, get_cases, search_policy)
+          → check_eligibility (code: business days, policy, approval limit)
+          → prepare_action (operation id per action, saved before the write)
+          → execute (same id on every retry) → reconcile (after timeouts) → verify (poll)
+          → compose_reply (claims allowed only from evidence for THIS escalation and case)
+```
+
+A real conversation against the running system (`make chat`):
+
+```
+you>   My order is late, please escalate it.
+   [plan] call_tool list_orders: customer didn't name an order; list their orders
+   [plan] ask_customer: 4 late orders and the customer didn't say which
+agent> I can see more than one delayed order: #1043 (Wool socks), #1042 (Blue rain jacket), ... Which one do you mean?
+
+you>   The blue jacket, order 1042.
+   [plan] call_tool get_order: customer named order 1042
+   [plan] call_tool get_cases: need the support case for order 1042
+   [plan] call_tool search_policy: need the escalation policy that applies to this customer
+   [plan] propose_escalation: order, case and policy are known and the customer asked for an escalation
+   [tool] POST /cases/C-1042/escalations -> 202 ok
+   [tool] GET /escalations/d778e20b-... -> 200 ok        (REQUESTED)
+   [tool] GET /escalations/d778e20b-... -> 200 ok        (COMPLETED: the worker created the task)
+agent> I've escalated order 1042 to our tier-2 support team and a specialist task has been created
+       (reference d778e20b-...). It is 8 business days late, which qualifies under policy ESC-3@v2.
+
+you>   Order 2001 is late, escalate it.
+   [tool] GET /orders/2001 -> 404 not_found
+agent> I couldn't find order 2001 on your account.
+```
+
+**LLM modes:** `scripted` (default) is a deterministic rule-based brain used for tests and CI. `live` uses any chat model through LangChain's provider-neutral `init_chat_model` (set `CASEGUARD_LLM=live` and `CASEGUARD_MODEL=<provider>:<model>`, and install that provider's LangChain package). No provider is hardcoded.
 
 ## How an escalation flows
 
@@ -78,7 +116,7 @@ The worker is **actually killed** (`Runtime.halt`, like a power cut) right after
 
 Requirements: Docker, and Java 21 for tests and demos. Maven is **not** needed: the `./mvnw` wrapper downloads it.
 
-Start the whole stack (PostgreSQL, Kafka, Case API, worker):
+Start the whole stack (PostgreSQL, Kafka, Case API, worker, agent on :8090):
 
 ```bash
 make up
@@ -102,12 +140,30 @@ curl -i -X POST http://localhost:8081/cases/C-1042/escalations \
 
 Run the same command again: you get `200` with `Idempotent-Replayed: true` and the **same** escalation, not a second one.
 
+Talk to the agent over HTTP:
+
+```bash
+curl -s -X POST localhost:8090/chat -H "Content-Type: application/json" \
+  -d '{"session":"demo-asha","message":"Order 1042 is late, please escalate it."}'
+```
+
+Or in the terminal (Python 3.12+):
+
+```bash
+make agent-venv
+```
+
+```bash
+make chat
+```
+
 API docs (Swagger UI): http://localhost:8081/swagger-ui.html
 
 ## Case API
 
 | Endpoint | Returns |
 |---|---|
+| `GET /orders` | The caller's own orders |
 | `GET /orders/{id}` | The caller's order, or 404 |
 | `GET /cases/{id}` | The caller's case (with `version`), or 404 |
 | `GET /cases?orderId=...` | The caller's cases for that order (empty if not theirs) |
@@ -129,8 +185,11 @@ Every request must carry `X-Tenant-Id` and `X-Customer-Id` (set from the trusted
 | Outbox relay (3) | Events reach Kafka carrying their event id; a crash after publish re-sends the **same** id; 4 relays at once never double-publish (`FOR UPDATE SKIP LOCKED`) |
 | Worker (7) | One event → one task; duplicate delivery skipped; crash after commit → redelivered and skipped; crash before commit → rolled back and redone; poison message → dead-letter topic without blocking the partition; wrong tenant rejected; `UNIQUE(escalation_id)` as the last safety net |
 | Crash demos (2) | Real JVM kills of the worker and the relay; exactly one task afterwards |
+| Agent scenarios (18) | Happy path; not eligible; worker down → "pending"; timeout → retry with the **same** operation id; all retries time out → **reconcile** finds the write, no fallback; confirmed not created; still unknown → honest "couldn't confirm"; ambiguous → asks, then proceeds; no unnecessary questions; second case gets a **new** id and another case's proof is never used; already escalated; approval needed; other tenant → 404; prompt injection; LLM can't call write tools or change identity; step budget; over-claiming model caught |
+| Agent units (6) | Business days skip weekends and holidays; expired policy never chosen; region filter beats keyword match |
+| Agent end-to-end (5) | Against the **real** Case API + Kafka + worker: escalation verified `REQUESTED → COMPLETED`; second conversation gets `already_open`; decline; cross-tenant 404; ambiguity uses the real order list |
 
-Tests were also verified by **breaking the code on purpose**: removing the ownership filter fails 4 tests; disabling the worker's dedupe fails the duplicate and crash tests; and removing the Java "already open" check still passes because the **database's partial unique index** blocks duplicates on its own.
+Tests were also verified by **breaking the code on purpose**: removing the ownership filter fails 4 tests; disabling the worker's dedupe fails the duplicate and crash tests; reusing one operation id for a whole conversation fails the two-case test; a new id per retry fails both retry tests; and removing the Java "already open" check still passes because the **database's partial unique index** blocks duplicates on its own.
 
 ## Design decisions
 

@@ -1488,6 +1488,17 @@ Model names are **placeholders until we verify what's available and affordable**
 | Too big at once | Three releases with phase gates | 12 |
 | Model names | Treated as placeholders until Release 3 | 10.4 |
 
+### Implementation notes from Phase 1.4 (the agent)
+
+| Topic | What was built | Why |
+|---|---|---|
+| LLM provider | `live` mode uses LangChain's `init_chat_model("<provider>:<model>")` with structured output. No provider is hardcoded | Swap models without code changes; Release 3 compares several |
+| Scripted brain | A deterministic, rule-based `ScriptedLLM` with the same interface | Tests and CI must be reproducible and free. It is a test double, not the product |
+| `GET /orders` | New Case API endpoint listing the caller's own orders | Needed so the agent can ask "which order do you mean?" (S10) |
+| No callback in Release 1 | When reconcile confirms nothing was created, the reply says so (`escalation_not_submitted`) | Claiming "we'll call you back" without a real callback would be a false claim. The callback endpoint comes in Release 2 |
+| Approval in Release 1 | Orders over the policy limit get `approval_required` and no write | The approval flow (interrupt/resume) comes in Release 2; until then the agent must not escalate |
+| Demo data | Order 1050 moved to 12 days late via a new seed migration (`V3_1`) | At 9 days it was exactly the policy limit on some weekdays, so tests depended on the day of the week |
+
 ### Second review: code corrections
 
 | Review point | Bug in the old code | Fix | Where |

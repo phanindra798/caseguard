@@ -694,7 +694,9 @@ class EscalationService {
 | 404 | Not your case (or doesn't exist) | Don't reveal anything |
 | 403 `approval_required` | Over $500 without a matching approval | Go through approval (Release 2) |
 
-**A race condition to know about:** two identical requests arriving at the same millisecond can both pass step 2. The `UNIQUE` constraint makes one of the inserts fail. We catch `DataIntegrityViolationException`, re-read the existing row, and **apply the same tenant and case check from step 2** before returning it. This is why the constraint matters even with the check in code.
+**A race found by the real concurrency test (Phase 1.2):** with 20 identical requests at once, request B can pass step 2 ("key not seen") just before request A commits, then reach step 3, see A's open escalation, and wrongly answer 409 `already_open`. The fix: if the open escalation carries **our own** operation ID, it's a replay, so return 200. The implemented code (`EscalationService`) includes this.
+
+**Another race to know about:** two identical requests arriving at the same millisecond can both pass step 2. The `UNIQUE` constraint makes one of the inserts fail. We catch `DataIntegrityViolationException`, re-read the existing row, and **apply the same tenant and case check from step 2** before returning it. This is why the constraint matters even with the check in code.
 
 **Lookup by operation ID** (`GET /escalations?operation_id=...`, used by the agent's `reconcile` step) follows the same rule: the query includes `tenant_id` and `customer_id`, so someone else's operation ID returns 404.
 

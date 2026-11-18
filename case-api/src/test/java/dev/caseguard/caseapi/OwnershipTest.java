@@ -12,11 +12,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.dao.DataIntegrityViolationException;
-import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -30,13 +26,9 @@ import org.springframework.web.context.WebApplicationContext;
  *   acme / cust-A2: order 1200          (same tenant, different customer)
  *   globex / cust-G1: order 2001        (different tenant)
  */
-@SpringBootTest
-@ActiveProfiles("test")
-@Import(FreshDatabaseConfig.class)
-class OwnershipTest {
+class OwnershipTest extends ApiTestBase {
 
   @Autowired WebApplicationContext context;
-  @Autowired JdbcTemplate jdbc;
   MockMvc mvc;
 
   @BeforeEach

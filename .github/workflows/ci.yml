@@ -36,4 +36,12 @@ jobs:
       - name: Build and test
         env:
           TEST_DB_URL: jdbc:postgresql://localhost:5432/caseguard_test
-        run: mvn -B verify
+        run: ./mvnw -B verify
+
+  docker-image:
+    # Proves the Dockerfile builds (this session can't run Docker, CI can).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build Case API image
+        run: docker build -t caseguard/case-api:ci case-api

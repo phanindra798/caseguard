@@ -15,3 +15,15 @@ services:
       retries: 10
     volumes:
       - ./deploy/init-test-db.sql:/docker-entrypoint-initdb.d/init-test-db.sql:ro
+
+  case-api:
+    build: ./case-api
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/caseguard
+      DB_USER: caseguard
+      DB_PASSWORD: caseguard
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy

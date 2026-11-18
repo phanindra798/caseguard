@@ -1,0 +1,475 @@
+{
+  "openapi" : "3.1.0",
+  "info" : {
+    "title" : "CaseGuard Case API",
+    "description" : "The only door into CRM data. Every call needs X-Tenant-Id and X-Customer-Id (from the trusted session). Errors are RFC 9457 ProblemDetail with a stable `code`.",
+    "version" : "0.2.0"
+  },
+  "paths" : {
+    "/cases/{caseId}/escalations" : {
+      "post" : {
+        "tags" : [ "escalation-controller" ],
+        "summary" : "Request an escalation (idempotent by Idempotency-Key)",
+        "operationId" : "request",
+        "parameters" : [ {
+          "name" : "caseId",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        }, {
+          "name" : "Idempotency-Key",
+          "in" : "header",
+          "required" : true,
+          "schema" : {
+            "type" : "string",
+            "format" : "uuid"
+          }
+        }, {
+          "name" : "X-Tenant-Id",
+          "in" : "header",
+          "description" : "Tenant (company) id from the trusted session",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        }, {
+          "name" : "X-Customer-Id",
+          "in" : "header",
+          "description" : "Customer id from the trusted session",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        } ],
+        "requestBody" : {
+          "content" : {
+            "application/json" : {
+              "schema" : {
+                "$ref" : "#/components/schemas/EscalationRequest"
+              }
+            }
+          },
+          "required" : true
+        },
+        "responses" : {
+          "202" : {
+            "description" : "New escalation accepted; worker completes it asynchronously",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/EscalationDto"
+                }
+              }
+            }
+          },
+          "200" : {
+            "description" : "Replay: this operation already created this escalation",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/EscalationDto"
+                }
+              }
+            }
+          },
+          "400" : {
+            "description" : "missing_identity | missing_idempotency_key | invalid_request",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "404" : {
+            "description" : "not_found (missing or not the caller's case)",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409" : {
+            "description" : "already_open (has existingEscalationId) | case_not_open | operation_conflict",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orders/{orderId}" : {
+      "get" : {
+        "tags" : [ "order-controller" ],
+        "operationId" : "getOrder",
+        "parameters" : [ {
+          "name" : "orderId",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        }, {
+          "name" : "X-Tenant-Id",
+          "in" : "header",
+          "description" : "Tenant (company) id from the trusted session",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        }, {
+          "name" : "X-Customer-Id",
+          "in" : "header",
+          "description" : "Customer id from the trusted session",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        } ],
+        "responses" : {
+          "200" : {
+            "description" : "OK",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/OrderDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/escalations" : {
+      "get" : {
+        "tags" : [ "escalation-controller" ],
+        "summary" : "Find the escalation an operation created (reconcile step); empty list = not created",
+        "operationId" : "findByOperation",
+        "parameters" : [ {
+          "name" : "operationId",
+          "in" : "query",
+          "required" : true,
+          "schema" : {
+            "type" : "string",
+            "format" : "uuid"
+          }
+        }, {
+          "name" : "X-Tenant-Id",
+          "in" : "header",
+          "description" : "Tenant (company) id from the trusted session",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        }, {
+          "name" : "X-Customer-Id",
+          "in" : "header",
+          "description" : "Customer id from the trusted session",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        } ],
+        "responses" : {
+          "200" : {
+            "description" : "OK",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "type" : "array",
+                  "items" : {
+                    "$ref" : "#/components/schemas/EscalationDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/escalations/{escalationId}" : {
+      "get" : {
+        "tags" : [ "escalation-controller" ],
+        "summary" : "Get one escalation (verify step)",
+        "operationId" : "get",
+        "parameters" : [ {
+          "name" : "escalationId",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "string",
+            "format" : "uuid"
+          }
+        }, {
+          "name" : "X-Tenant-Id",
+          "in" : "header",
+          "description" : "Tenant (company) id from the trusted session",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        }, {
+          "name" : "X-Customer-Id",
+          "in" : "header",
+          "description" : "Customer id from the trusted session",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        } ],
+        "responses" : {
+          "200" : {
+            "description" : "The caller's escalation",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/EscalationDto"
+                }
+              }
+            }
+          },
+          "404" : {
+            "description" : "not_found",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/cases" : {
+      "get" : {
+        "tags" : [ "case-controller" ],
+        "operationId" : "findByOrder",
+        "parameters" : [ {
+          "name" : "orderId",
+          "in" : "query",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        }, {
+          "name" : "X-Tenant-Id",
+          "in" : "header",
+          "description" : "Tenant (company) id from the trusted session",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        }, {
+          "name" : "X-Customer-Id",
+          "in" : "header",
+          "description" : "Customer id from the trusted session",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        } ],
+        "responses" : {
+          "200" : {
+            "description" : "OK",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "type" : "array",
+                  "items" : {
+                    "$ref" : "#/components/schemas/CaseDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/cases/{caseId}" : {
+      "get" : {
+        "tags" : [ "case-controller" ],
+        "operationId" : "getCase",
+        "parameters" : [ {
+          "name" : "caseId",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        }, {
+          "name" : "X-Tenant-Id",
+          "in" : "header",
+          "description" : "Tenant (company) id from the trusted session",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        }, {
+          "name" : "X-Customer-Id",
+          "in" : "header",
+          "description" : "Customer id from the trusted session",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        } ],
+        "responses" : {
+          "200" : {
+            "description" : "OK",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/CaseDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components" : {
+    "schemas" : {
+      "EscalationRequest" : {
+        "type" : "object",
+        "properties" : {
+          "reason" : {
+            "type" : "string",
+            "maxLength" : 1000,
+            "minLength" : 0
+          },
+          "policyRef" : {
+            "type" : "string",
+            "minLength" : 1,
+            "pattern" : "^[A-Z]+-\\d+@v\\d+$"
+          }
+        },
+        "required" : [ "policyRef", "reason" ]
+      },
+      "ProblemDetail" : {
+        "type" : "object",
+        "properties" : {
+          "type" : {
+            "type" : "string",
+            "format" : "uri"
+          },
+          "title" : {
+            "type" : "string"
+          },
+          "status" : {
+            "type" : "integer",
+            "format" : "int32"
+          },
+          "detail" : {
+            "type" : "string"
+          },
+          "instance" : {
+            "type" : "string",
+            "format" : "uri"
+          },
+          "properties" : {
+            "type" : "object",
+            "additionalProperties" : { }
+          }
+        }
+      },
+      "EscalationDto" : {
+        "type" : "object",
+        "properties" : {
+          "id" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "caseId" : {
+            "type" : "string"
+          },
+          "operationId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "status" : {
+            "type" : "string"
+          },
+          "reason" : {
+            "type" : "string"
+          },
+          "policyRef" : {
+            "type" : "string"
+          },
+          "requestedAt" : {
+            "type" : "string",
+            "format" : "date-time"
+          },
+          "completedAt" : {
+            "type" : "string",
+            "format" : "date-time"
+          }
+        }
+      },
+      "OrderDto" : {
+        "type" : "object",
+        "properties" : {
+          "id" : {
+            "type" : "string"
+          },
+          "customerId" : {
+            "type" : "string"
+          },
+          "description" : {
+            "type" : "string"
+          },
+          "amountCents" : {
+            "type" : "integer",
+            "format" : "int64"
+          },
+          "status" : {
+            "type" : "string"
+          },
+          "promisedDate" : {
+            "type" : "string",
+            "format" : "date"
+          },
+          "deliveredAt" : {
+            "type" : "string",
+            "format" : "date-time"
+          }
+        }
+      },
+      "CaseDto" : {
+        "type" : "object",
+        "properties" : {
+          "id" : {
+            "type" : "string"
+          },
+          "orderId" : {
+            "type" : "string"
+          },
+          "subject" : {
+            "type" : "string"
+          },
+          "status" : {
+            "type" : "string"
+          },
+          "version" : {
+            "type" : "integer",
+            "format" : "int32"
+          },
+          "updatedAt" : {
+            "type" : "string",
+            "format" : "date-time"
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,30 @@
+spring:
+  application:
+    name: escalation-worker
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/caseguard}
+    username: ${DB_USER:caseguard}
+    password: ${DB_PASSWORD:caseguard}
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
+    consumer:
+      group-id: escalation-worker
+      auto-offset-reset: earliest       # a brand-new group starts from the oldest message
+      enable-auto-commit: false         # WE decide when an offset is committed (after the DB commit)
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    producer:                           # only used to send poison messages to the dead-letter topic
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+    listener:
+      ack-mode: manual_immediate        # offset committed exactly when we call ack.acknowledge()
+
+caseguard:
+  topics:
+    escalation-requested: escalation.requested
+  worker:
+    task-queue: tier2-support
+
+logging:
+  level:
+    org.apache.kafka: WARN

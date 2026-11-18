@@ -8,40 +8,122 @@ on:
 jobs:
   case-api:
     runs-on: ubuntu-latest
+    # Real PostgreSQL 16 and real Kafka 4.3 (KRaft, single node).
     services:
-      # A real PostgreSQL 16 for the tests, same version as local development.
       postgres:
         image: postgres:16
         env:
           POSTGRES_USER: caseguard
           POSTGRES_PASSWORD: caseguard
           POSTGRES_DB: caseguard_test
-        ports:
-          - 5432:5432
+        ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U caseguard"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      kafka:
+        image: apache/kafka:4.3.2
+        ports: ["9092:9092"]
+        options: >-
+          --health-cmd "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092"
+          --health-interval 5s --health-timeout 10s --health-retries 20
     defaults:
       run:
         working-directory: case-api
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: "21"
-          cache: maven
+        with: { distribution: temurin, java-version: "21", cache: maven }
       - name: Build and test
         env:
           TEST_DB_URL: jdbc:postgresql://localhost:5432/caseguard_test
         run: ./mvnw -B verify
 
-  docker-image:
-    # Proves the Dockerfile builds (this session can't run Docker, CI can).
+  escalation-worker:
+    runs-on: ubuntu-latest
+    # Real PostgreSQL 16 and real Kafka 4.3 (KRaft, single node).
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: caseguard
+          POSTGRES_PASSWORD: caseguard
+          POSTGRES_DB: caseguard_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U caseguard"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      kafka:
+        image: apache/kafka:4.3.2
+        ports: ["9092:9092"]
+        options: >-
+          --health-cmd "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092"
+          --health-interval 5s --health-timeout 10s --health-retries 20
+    defaults:
+      run:
+        working-directory: escalation-worker
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with: { distribution: temurin, java-version: "21", cache: maven }
+      - name: Build and test
+        env:
+          TEST_DB_URL: jdbc:postgresql://localhost:5432/caseguard_test
+        run: ./mvnw -B verify
+
+  crash-demo:
+    # The REAL crash-and-replay demo, both scenarios, on every push.
+    runs-on: ubuntu-latest
+    # Real PostgreSQL 16 and real Kafka 4.3 (KRaft, single node).
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: caseguard
+          POSTGRES_PASSWORD: caseguard
+          POSTGRES_DB: caseguard_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U caseguard"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      kafka:
+        image: apache/kafka:4.3.2
+        ports: ["9092:9092"]
+        options: >-
+          --health-cmd "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092"
+          --health-interval 5s --health-timeout 10s --health-retries 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with: { distribution: temurin, java-version: "21", cache: maven }
+      - name: Build jars
+        run: |
+          (cd case-api && ./mvnw -B -q package -DskipTests)
+          (cd escalation-worker && ./mvnw -B -q package -DskipTests)
+      - name: Worker crashes after DB commit, before Kafka ack
+        run: scripts/demo-crash-replay.sh worker
+      - name: Relay crashes after publish, before marking outbox row
+        run: scripts/demo-crash-replay.sh relay
+
+  docker-compose:
+    # Builds both images and runs the full stack: request → relay → Kafka → worker → task.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Build Case API image
-        run: docker build -t caseguard/case-api:ci case-api
+      - name: Start the stack
+        run: docker compose up -d --build --wait postgres kafka case-api
+      - name: Start the worker
+        run: docker compose up -d escalation-worker
+      - name: End-to-end smoke test
+        run: |
+          for i in $(seq 1 60); do curl -sf localhost:8081/actuator/health && break; sleep 2; done
+          curl -sf -X POST localhost:8081/cases/C-1042/escalations \
+            -H "X-Tenant-Id: acme" -H "X-Customer-Id: cust-A1" -H "Content-Type: application/json" \
+            -H "Idempotency-Key: $(cat /proc/sys/kernel/random/uuid)" \
+            -d '{"reason":"Order is 8 business days late","policyRef":"ESC-3@v2"}'
+          for i in $(seq 1 60); do
+            n=$(docker compose exec -T postgres psql -U caseguard -d caseguard -tAc "select count(*) from follow_up_tasks")
+            [ "$n" = "1" ] && echo "follow-up task created" && exit 0
+            sleep 2
+          done
+          docker compose logs case-api escalation-worker | tail -50
+          exit 1

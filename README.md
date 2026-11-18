@@ -20,21 +20,71 @@ CaseGuard pairs an agent that **verifies before it claims** with a backend that 
 |---|---|---|
 | 1.1 | Case API: orders and cases with tenant/customer ownership checks | ✅ Done |
 | 1.2 | Idempotent escalation endpoint + transactional outbox, concurrency and atomicity tests, OpenAPI contract | ✅ Done |
-| 1.3 | Outbox relay, Redpanda, worker with dedupe, crash fail points | ⏳ Next |
-| 1.4 | LangGraph agent with planner, verify, reconcile | |
+| 1.3 | Outbox relay → Kafka → worker with dedupe, dead-letter topic, **real crash-and-replay demo** | ✅ Done |
+| 1.4 | LangGraph agent with planner, verify, reconcile | ⏳ Next |
 | 1.5 | Regression harness + CI | |
+
+## How an escalation flows
+
+```
+ POST /cases/C-1042/escalations          (Idempotency-Key)
+        │
+        ▼
+ ┌──────────────┐  one DB transaction   ┌────────────────────────────┐
+ │  Case API    │ ────────────────────► │ escalations + outbox rows  │
+ └──────────────┘                       └─────────────┬──────────────┘
+        ▲                                             │ outbox relay (every 200 ms)
+        │ GET /escalations/{id}                       ▼   publish, wait for ack, mark published
+        │ (agent verifies)                    ┌───────────────────────┐
+        │                                     │ Kafka                 │
+        │                                     │ escalation.requested  │──► .DLT (poison messages)
+        │                                     └───────────┬───────────┘
+        │                                                 ▼
+        │                                     ┌───────────────────────┐  one DB transaction:
+        └──────── status = COMPLETED ──────── │ Escalation worker     │  dedupe row + task + status
+                                              └───────────────────────┘  THEN ack the Kafka offset
+```
+
+**Guarantee:** at-least-once delivery + deduplicated, transactional processing = **exactly one follow-up task per escalation**, even when the relay or the worker crashes mid-flight.
+
+## The crash-and-replay demo
+
+```bash
+make infra
+```
+
+```bash
+make demo-worker
+```
+
+The worker is **actually killed** (`Runtime.halt`, like a power cut) right after committing its work but before acknowledging Kafka. On restart, Kafka delivers the same event again, the worker recognises its event id and skips it, and the final state is still **one** task:
+
+```
+▶ Wait for worker-1 to die
+  ✓ worker-1 HALTED (exit code 1): FAIL_POINT triggered (halt): WORKER_AFTER_DB_COMMIT_BEFORE_ACK
+▶ State right after the crash
+  follow_up_tasks  = 1
+  processed_events = 1
+  → the work was COMMITTED, but Kafka never got the ack, so it will deliver the event again.
+▶ Restart the worker (no fail point)
+  ✓ worker-2 got the SAME event again: duplicate event fb4a5025-… skipped
+▶ Final check
+  ✓ PASS: delivered twice, exactly ONE task (scenario: worker)
+```
+
+`make demo-relay` does the same for the relay: it dies after publishing but before marking the outbox row, re-sends the same event on restart, and the worker skips it. **Both demos run in CI on every push.**
 
 ## Run it locally
 
-Requirements: Docker. (Java 21 only if you want to run tests outside Docker; Maven is **not** needed, the `./mvnw` wrapper downloads it.)
+Requirements: Docker, and Java 21 for tests and demos. Maven is **not** needed: the `./mvnw` wrapper downloads it.
 
-Start PostgreSQL and the Case API:
+Start the whole stack (PostgreSQL, Kafka, Case API, worker):
 
 ```bash
 make up
 ```
 
-Run the tests (needs PostgreSQL running, e.g. `make db`):
+Run all tests (needs PostgreSQL and Kafka, e.g. `make infra`):
 
 ```bash
 make test
@@ -76,8 +126,11 @@ Every request must carry `X-Tenant-Id` and `X-Customer-Id` (set from the trusted
 | Concurrency (6) | **20 simultaneous identical requests → exactly 1 escalation and 1 event**; 20 competing requests → one 202, nineteen 409 |
 | Atomicity (1) | A forced failure *after* the escalation insert rolls back everything; a retry with the same key then succeeds |
 | Contract (1) | The served OpenAPI spec equals the committed `openapi.json` |
+| Outbox relay (3) | Events reach Kafka carrying their event id; a crash after publish re-sends the **same** id; 4 relays at once never double-publish (`FOR UPDATE SKIP LOCKED`) |
+| Worker (7) | One event → one task; duplicate delivery skipped; crash after commit → redelivered and skipped; crash before commit → rolled back and redone; poison message → dead-letter topic without blocking the partition; wrong tenant rejected; `UNIQUE(escalation_id)` as the last safety net |
+| Crash demos (2) | Real JVM kills of the worker and the relay; exactly one task afterwards |
 
-Tests were also verified by **breaking the code on purpose**: removing the ownership filter fails 4 tests, and removing the Java "already open" check still passes because the **database's partial unique index** blocks duplicates on its own.
+Tests were also verified by **breaking the code on purpose**: removing the ownership filter fails 4 tests; disabling the worker's dedupe fails the duplicate and crash tests; and removing the Java "already open" check still passes because the **database's partial unique index** blocks duplicates on its own.
 
 ## Design decisions
 
@@ -85,6 +138,9 @@ Tests were also verified by **breaking the code on purpose**: removing the owner
 - **404, not 403, for other people's data.** The response doesn't reveal that the record exists.
 - **Idempotency key created by the caller's code, enforced by a `UNIQUE` constraint.** Retries return the original result.
 - **One open escalation per case, enforced by a partial unique index** (`WHERE status <> 'FAILED'`), with the Java check as a fast path and a race-recovery path that re-reads after a constraint violation.
-- **Transactional outbox.** The escalation and its `EscalationRequested` event are written in one transaction, so neither can exist without the other. A relay publishes them in Phase 1.3.
+- **Transactional outbox.** The escalation and its `EscalationRequested` event are written in one transaction, so neither can exist without the other. The relay publishes with `acks=all`, waits for the broker's confirmation, and only then marks the row, so duplicates are possible but losses are not.
+- **Commit, then ack.** The worker commits its database transaction (dedupe row + task + status) before committing the Kafka offset. A crash in between causes a harmless redelivery, never lost work.
+- **Poison messages go to a dead-letter topic** instead of being retried forever and blocking the partition.
+- **Apache Kafka 4 in KRaft mode** (no ZooKeeper): the official image runs as a single node locally and in CI.
 - **Fail points.** Named spots in the code where tests can force a crash at an exact moment.
 - **Flyway owns the schema; Hibernate only validates it.** Money is integer cents. Demo data is kept separate from migrations.

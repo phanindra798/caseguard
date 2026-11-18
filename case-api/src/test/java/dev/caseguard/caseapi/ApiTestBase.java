@@ -37,6 +37,8 @@ public abstract class ApiTestBase {
 
   @BeforeEach
   void resetData() {
+    jdbc.update("delete from follow_up_tasks");
+    jdbc.update("delete from processed_events");
     jdbc.update("delete from outbox");
     jdbc.update("delete from escalations");
     jdbc.update("update cases set status = 'OPEN'");

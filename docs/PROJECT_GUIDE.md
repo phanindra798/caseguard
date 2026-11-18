@@ -1272,7 +1272,9 @@ Model names are **placeholders until we verify what's available and affordable**
 
 **Learning tip:** in Phase 1.4 you'll first write a ~40-line plain loop to understand tool calling, *then* move to LangGraph. You'll know what the framework does for you.
 
-### 11.3 Messaging: Redpanda (Kafka API)
+### 11.3 Messaging: Apache Kafka (changed during Phase 1.3)
+
+> **Decision update:** the original plan said Redpanda. During Phase 1.3 we switched to **Apache Kafka 4.x in KRaft mode**. It runs as a single node with no ZooKeeper, the official `apache/kafka` image starts without a custom command (so it works as a GitHub Actions service container), it runs locally without Docker, and "Kafka" is the name interviewers expect. The client code would be identical on Redpanda, since both speak the Kafka protocol. The table below is the original comparison.
 
 | Option | Why not / why |
 |---|---|

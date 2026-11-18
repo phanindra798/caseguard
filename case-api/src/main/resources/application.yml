@@ -14,6 +14,22 @@ spring:
     hibernate:
       ddl-auto: validate
     open-in-view: false
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all                      # broker confirms only after the write is durable
+      properties:
+        enable.idempotence: true     # producer retries don't create duplicates inside Kafka itself
+
+caseguard:
+  topics:
+    escalation-requested: escalation.requested
+  relay:
+    enabled: ${RELAY_ENABLED:true}
+    interval-ms: 200
+    batch-size: 100
 
 management:
   endpoints:
@@ -23,3 +39,7 @@ management:
 
 server:
   port: ${PORT:8081}
+
+logging:
+  level:
+    org.apache.kafka: WARN

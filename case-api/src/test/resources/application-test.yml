@@ -7,3 +7,7 @@ spring:
     password: ${DB_PASSWORD:caseguard}
   flyway:
     clean-disabled: false   # allowed ONLY in tests: we wipe and rebuild the schema per test run
+
+caseguard:
+  relay:
+    enabled: false   # tests call OutboxRelay.relayBatch() directly, so timing is deterministic

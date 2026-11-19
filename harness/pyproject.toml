@@ -1,0 +1,29 @@
+[project]
+name = "caseguard-harness"
+version = "0.1.0"
+description = "Regression harness: runs scenario files against the real CaseGuard stack and checks reply, tool calls, claims, database and events"
+requires-python = ">=3.12"
+dependencies = [
+  "caseguard-agent",
+  "psycopg[binary]>=3.2",
+  "confluent-kafka>=2.6",
+  "pyyaml>=6",
+  "httpx>=0.28,<1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+caseguard-harness = "caseguard_harness.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["stack: runs scenarios against the real stack (needs PostgreSQL, Kafka, Java and built jars)"]
+
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["caseguard_harness*"]

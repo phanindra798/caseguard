@@ -22,7 +22,8 @@ CaseGuard pairs an agent that **verifies before it claims** with a backend that 
 | 1.2 | Idempotent escalation endpoint + transactional outbox, concurrency and atomicity tests, OpenAPI contract | ✅ Done |
 | 1.3 | Outbox relay → Kafka → worker with dedupe, dead-letter topic, **real crash-and-replay demo** | ✅ Done |
 | 1.4 | LangGraph agent: planner loop, eligibility in code, operation ids, reconcile, verify-before-claim | ✅ Done |
-| 1.5 | Regression harness: YAML scenarios, fault injection, claim checker | ⏳ Next |
+| 1.5 | Regression harness: YAML scenarios, fault injection, claim checker, runs in CI | ✅ Done |
+| 2.x | Release 2: supervisor approval (interrupt/resume), durable conversations, vector policy search, tracing | ⏳ Next |
 
 ## The agent
 
@@ -61,6 +62,69 @@ agent> I couldn't find order 2001 on your account.
 ```
 
 **LLM modes:** `scripted` (default) is a deterministic rule-based brain used for tests and CI. `live` uses any chat model through LangChain's provider-neutral `init_chat_model` (set `CASEGUARD_LLM=live` and `CASEGUARD_MODEL=<provider>:<model>`, and install that provider's LangChain package). No provider is hardcoded.
+
+## The regression harness
+
+The harness runs **scenario files** against the **real** stack (Case API, Kafka, worker, PostgreSQL) and checks
+three layers for every conversation turn: what the agent **decided**, what it **did** (its API calls), and what it
+**claimed**, with every claim matched to evidence for the same escalation and case seen **before** the reply.
+Then it checks the real database, the Kafka topic and the worker log once the system has settled.
+
+```yaml
+id: S04
+title: Worker crashes after its DB commit, before the Kafka ack
+setup:
+  - start_worker: {fail_point: WORKER_AFTER_DB_COMMIT_BEFORE_ACK}
+turns:
+  - say: "Order 1042 is late, please escalate it."
+    expect:
+      claims: {one_of: [[escalation_completed], [escalation_pending]], case_id: C-1042}
+recovery:
+  actions: [wait_worker_crash, start_worker]
+  wait_for_worker_log: "duplicate event"     # proves the event really was delivered a second time
+final:
+  db:
+    - {sql: "select count(*) from follow_up_tasks", equals: 1}
+```
+
+```
+  PASS  S01  Happy path, escalation verified as completed
+  PASS  S02  Not late enough, declined with a policy citation and no write
+  PASS  S03  Response lost after the write, retry reuses the same operation id
+  PASS  S04  Worker crashes after its DB commit, before the Kafka ack
+  PASS  S05  Relay crashes after publishing, before marking the outbox row
+  PASS  S06  Worker down for the whole conversation, agent says pending
+  PASS  S07  A model that always says "done" is caught by the claim checker
+  PASS  S08  Another company's order is invisible and nothing is written
+  PASS  S10  Ambiguous request, agent asks which order, then proceeds
+  PASS  S19  Every response lost, reconcile finds the escalation, no second action
+  PASS  S20  Second case gets its own operation id and never borrows the first case's proof
+  PASS  S23  API down for writes, reconcile confirms nothing was created, honest reply
+12/12 scenarios passed.
+```
+
+**Faults** come from an HTTP-aware fault proxy between the agent and the Case API ("let the POST reach the server,
+then lose its response"; "503 without forwarding"), from **fail points** that halt a JVM at an exact line, and from
+stopping or restarting services. **S07 tests the tester:** it passes only if the checkers catch a model that always
+says "done".
+
+**Catching a regression:** a one-line change that reports accepted escalations as completed passes the happy path
+(S01) but fails S06 and S20:
+
+```
+  PASS  S01  Happy path, escalation verified as completed
+  FAIL  S06  Worker down for the whole conversation, agent says pending
+        - turn 1: CLAIM_TYPES: expected one of [['escalation_pending']], got ['escalation_completed']
+        - turn 1: UNSUPPORTED_CLAIM: 'escalation_completed' for escalation 26f6a1eb-… has no matching evidence before the reply
+  FAIL  S20  Second case gets its own operation id and never borrows the first case's proof
+        - turn 2: UNSUPPORTED_CLAIM: 'escalation_completed' for escalation cc7483ff-… has no matching evidence before the reply
+```
+
+**Checking the mechanism, not just the end state:** with the worker's dedupe disabled, the database still ends with
+one task (the `UNIQUE(escalation_id)` safety net blocks the second insert), so a row-count check alone would pass.
+S04 and S05 still **fail**, because they also require the worker to log that it recognised and skipped the duplicate.
+
+Run it: `make infra`, build the jars, then `make harness`. CI runs it on every push and publishes the report.
 
 ## How an escalation flows
 
@@ -187,6 +251,8 @@ Every request must carry `X-Tenant-Id` and `X-Customer-Id` (set from the trusted
 | Crash demos (2) | Real JVM kills of the worker and the relay; exactly one task afterwards |
 | Agent scenarios (18) | Happy path; not eligible; worker down → "pending"; timeout → retry with the **same** operation id; all retries time out → **reconcile** finds the write, no fallback; confirmed not created; still unknown → honest "couldn't confirm"; ambiguous → asks, then proceeds; no unnecessary questions; second case gets a **new** id and another case's proof is never used; already escalated; approval needed; other tenant → 404; prompt injection; LLM can't call write tools or change identity; step budget; over-claiming model caught |
 | Agent units (6) | Business days skip weekends and holidays; expired policy never chosen; region filter beats keyword match |
+| Harness checkers (16) | Unsupported, late or wrong-subject claims; text over-claims; tool order, counts and operation ids; decisions; DB and event checks; the fault proxy really forwards, loses and refuses |
+| Harness scenarios (12) | The full list above, against the real stack with real faults |
 | Agent end-to-end (5) | Against the **real** Case API + Kafka + worker: escalation verified `REQUESTED → COMPLETED`; second conversation gets `already_open`; decline; cross-tenant 404; ambiguity uses the real order list |
 
 Tests were also verified by **breaking the code on purpose**: removing the ownership filter fails 4 tests; disabling the worker's dedupe fails the duplicate and crash tests; reusing one operation id for a whole conversation fails the two-case test; a new id per retry fails both retry tests; and removing the Java "already open" check still passes because the **database's partial unique index** blocks duplicates on its own.

@@ -1,0 +1,13 @@
+id: S23
+title: API down for writes, reconcile confirms nothing was created, honest reply
+setup:
+  - fault: {method: POST, path: "^/cases/[^/]+/escalations$", mode: unavailable, times: 3}
+turns:
+  - say: "Order 1042 is late, please escalate it."
+    expect:
+      tools:
+        counts: {request_escalation: 3, find_escalation_by_operation: 1}
+      claims: {one_of: [[escalation_not_submitted]], text_includes: ["Nothing was created"]}
+final:
+  db:
+    - {sql: "select count(*) from escalations", equals: 0}

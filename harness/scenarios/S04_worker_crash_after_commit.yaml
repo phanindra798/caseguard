@@ -1,0 +1,18 @@
+id: S04
+title: Worker crashes after its DB commit, before the Kafka ack
+setup:
+  - start_worker: {fail_point: WORKER_AFTER_DB_COMMIT_BEFORE_ACK}
+turns:
+  - say: "Order 1042 is late, please escalate it."
+    expect:
+      # Both are honest, depending on whether the worker committed before the agent's last poll.
+      claims: {one_of: [[escalation_completed], [escalation_pending]], case_id: C-1042}
+recovery:
+  actions: [wait_worker_crash, start_worker]
+  wait_for_worker_log: "duplicate event"     # proves the event really was delivered a second time
+  timeout: 60
+final:
+  db:
+    - {sql: "select count(*) from follow_up_tasks", equals: 1}
+    - {sql: "select count(*) from processed_events", equals: 1}
+    - {sql: "select status from escalations", equals: COMPLETED}

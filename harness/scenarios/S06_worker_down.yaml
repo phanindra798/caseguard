@@ -1,0 +1,14 @@
+id: S06
+title: Worker down for the whole conversation, agent says pending
+setup: [stop_worker]
+turns:
+  - say: "Order 1042 is late, please escalate it."
+    expect:
+      claims: {one_of: [[escalation_pending]], excludes: [escalation_completed], case_id: C-1042}
+recovery:
+  actions: [start_worker]
+  wait_until: "select status = 'COMPLETED' from escalations"   # it does complete, later
+  timeout: 60
+final:
+  db:
+    - {sql: "select count(*) from follow_up_tasks", equals: 1}

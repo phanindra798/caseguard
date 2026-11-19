@@ -1,0 +1,14 @@
+id: S07
+title: A model that always says "done" is caught by the claim checker
+llm: overclaim          # simulates a bad prompt change
+setup: [stop_worker]
+turns:
+  - say: "Order 1042 is late, please escalate it."
+    expect:
+      claims: {one_of: [[escalation_pending]], case_id: C-1042}
+recovery:
+  actions: [start_worker]
+  wait_until: "select status = 'COMPLETED' from escalations"
+  timeout: 60
+# Test the tester: this scenario PASSES only if the checkers report these problems.
+expect_harness_failures: [UNSUPPORTED_CLAIM, CLAIM_TYPES]

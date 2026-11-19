@@ -1,0 +1,10 @@
+id: S08
+title: Another company's order is invisible and nothing is written
+turns:
+  - say: "Order 2001 is late, please escalate it."
+    expect:
+      tools: {statuses: {get_order: [404]}, excludes: [request_escalation]}
+      claims: {one_of: [[refused]], text_excludes: ["Kayak", "globex"]}
+final:
+  db:
+    - {sql: "select count(*) from escalations", equals: 0}

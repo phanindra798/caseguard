@@ -154,6 +154,53 @@ jobs:
           PYTHON: python
         run: scripts/e2e-agent.sh
 
+  harness:
+    # The regression harness: every scenario file against the REAL stack, with fault injection.
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: caseguard
+          POSTGRES_PASSWORD: caseguard
+          POSTGRES_DB: caseguard_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U caseguard"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      kafka:
+        image: apache/kafka:4.3.2
+        ports: ["9092:9092"]
+        options: >-
+          --health-cmd "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092"
+          --health-interval 5s --health-timeout 10s --health-retries 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with: { distribution: temurin, java-version: "21", cache: maven }
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.12", cache: pip, cache-dependency-path: "**/pyproject.toml" }
+      - name: Install agent and harness
+        run: pip install -e agent -e "harness[dev]"
+      - name: Checker and fault-proxy unit tests
+        run: python -m pytest -q harness/tests
+      - name: Build jars
+        run: |
+          (cd case-api && ./mvnw -B -q package -DskipTests)
+          (cd escalation-worker && ./mvnw -B -q package -DskipTests)
+      - name: Run all scenarios
+        run: python -m caseguard_harness --report harness-report.md
+      - name: Publish report
+        if: always()
+        run: '[ -f harness-report.md ] && cat harness-report.md >> "$GITHUB_STEP_SUMMARY" || true'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: harness-report
+          path: |
+            harness-report.md
+            harness-report.json
+
   docker-compose:
     # Builds both images and runs the full stack: request → relay → Kafka → worker → task.
     runs-on: ubuntu-latest

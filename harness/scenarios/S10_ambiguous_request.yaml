@@ -1,0 +1,16 @@
+id: S10
+title: Ambiguous request, agent asks which order, then proceeds
+turns:
+  - say: "My order is late, please escalate it."
+    expect:
+      decisions: {includes: [ask_customer], excludes: [propose_escalation]}
+      tools: {excludes: [request_escalation]}
+      claims: {one_of: [[needs_more_info]]}
+  - say: "The blue jacket, order 1042."
+    expect:
+      decisions: {excludes: [ask_customer]}
+      claims: {one_of: [[escalation_completed], [escalation_pending]], case_id: C-1042}
+final:
+  db:
+    - {sql: "select count(*) from escalations where case_id = 'C-1042'", equals: 1}
+    - {sql: "select count(*) from escalations", equals: 1}

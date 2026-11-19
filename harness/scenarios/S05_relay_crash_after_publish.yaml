@@ -1,0 +1,18 @@
+id: S05
+title: Relay crashes after publishing, before marking the outbox row
+setup:
+  - restart_api: {fail_point: RELAY_AFTER_PUBLISH_BEFORE_MARK}
+turns:
+  - say: "Order 1042 is late, please escalate it."
+    expect:
+      claims: {one_of: [[escalation_completed], [escalation_pending]], case_id: C-1042}
+recovery:
+  actions: [wait_api_crash, restart_api]
+  wait_until: "select count(*) = 0 from outbox where published_at is null"
+  wait_for_worker_log: "duplicate event"
+  timeout: 90
+final:
+  db:
+    - {sql: "select count(*) from follow_up_tasks", equals: 1}
+    - {sql: "select count(*) from processed_events", equals: 1}
+  events: {min_per_escalation: 2}            # the same event really was published twice

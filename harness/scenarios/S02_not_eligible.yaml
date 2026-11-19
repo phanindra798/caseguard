@@ -1,0 +1,10 @@
+id: S02
+title: Not late enough, declined with a policy citation and no write
+turns:
+  - say: "Order 1043 is late, can you escalate it?"
+    expect:
+      tools: {excludes: [request_escalation]}
+      claims: {one_of: [[escalation_declined]], text_includes: ["ESC-3@v2"]}
+final:
+  db:
+    - {sql: "select count(*) from escalations", equals: 0}

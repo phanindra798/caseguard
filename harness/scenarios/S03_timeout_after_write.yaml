@@ -1,0 +1,12 @@
+id: S03
+title: Response lost after the write, retry reuses the same operation id
+setup:
+  - fault: {method: POST, path: "^/cases/[^/]+/escalations$", mode: lose_response, times: 1}
+turns:
+  - say: "Order 1042 is late, please escalate it."
+    expect:
+      tools: {counts: {request_escalation: 2}, same_operation_id: true}
+      claims: {one_of: [[escalation_completed], [escalation_pending]], case_id: C-1042}
+final:
+  db:
+    - {sql: "select count(*) from escalations", equals: 1}

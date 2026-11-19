@@ -1,0 +1,19 @@
+id: S20
+title: Second case gets its own operation id and never borrows the first case's proof
+turns:
+  - say: "Order 1042 is late, please escalate it."
+    expect:
+      claims: {one_of: [[escalation_completed]], case_id: C-1042}
+  - say: "Order 1050 is also late, please escalate that one too."
+    before: [stop_worker]
+    expect:
+      tools: {counts: {request_escalation: 1}}
+      claims: {one_of: [[escalation_pending]], case_id: C-1050}
+recovery:
+  actions: [start_worker]
+  wait_until: "select count(*) = 2 from follow_up_tasks"
+  timeout: 60
+final:
+  db:
+    - {sql: "select count(*) from escalations", equals: 2}
+    - {sql: "select count(distinct operation_id) from escalations", equals: 2}

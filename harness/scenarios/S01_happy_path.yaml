@@ -1,0 +1,15 @@
+id: S01
+title: Happy path, escalation verified as completed
+turns:
+  - say: "Order 1042 is late, please escalate it."
+    expect:
+      decisions: {includes: [propose_escalation], excludes: [ask_customer]}
+      tools:
+        in_order: [get_order, get_cases, request_escalation, get_escalation_status]
+        counts: {request_escalation: 1}
+      claims: {one_of: [[escalation_completed]], case_id: C-1042, policy_cited: ESC-3@v2}
+final:
+  db:
+    - {sql: "select count(*) from escalations where case_id = 'C-1042'", equals: 1}
+    - {sql: "select count(*) from follow_up_tasks", equals: 1}
+    - {sql: "select status from escalations", equals: COMPLETED}

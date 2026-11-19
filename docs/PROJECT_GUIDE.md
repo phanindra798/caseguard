@@ -1499,6 +1499,18 @@ Model names are **placeholders until we verify what's available and affordable**
 | Approval in Release 1 | Orders over the policy limit get `approval_required` and no write | The approval flow (interrupt/resume) comes in Release 2; until then the agent must not escalate |
 | Demo data | Order 1050 moved to 12 days late via a new seed migration (`V3_1`) | At 9 days it was exactly the policy limit on some weekdays, so tests depended on the day of the week |
 
+### Implementation notes from Phase 1.5 (the harness)
+
+| Topic | What was built | Why |
+|---|---|---|
+| Fault injection | An HTTP-aware fault proxy (`harness/caseguard_harness/fault_proxy.py`) instead of Toxiproxy | Toxiproxy works on TCP connections. The scenarios need "let this POST reach the server, then lose its response, and leave GETs alone", which needs an HTTP-level proxy |
+| Real crashes | Fail points halt the real JVMs; the harness restarts them | Same mechanism as the crash demos, now inside scripted scenarios |
+| S07 | `expect_harness_failures`: passes only if the checkers report `UNSUPPORTED_CLAIM` and `CLAIM_TYPES` | Tests the tester. A broken checker would make every scenario look green |
+| S23 | New: API refuses writes (503, nothing forwarded) → reconcile confirms nothing was created → honest reply | Covers the "confirmed not created" branch of reconcile against the real stack |
+| Evidence timing | Claims are checked against evidence observed before `reply.created_at` | A task completing after the reply must not make an earlier "done" pass |
+| Kafka failover time | S04 takes ~50 s: after a worker crash, Kafka waits for the consumer session timeout (45 s default) before reassigning partitions | Real behaviour, kept on purpose. Lower timeouts give faster failover but more false rebalances |
+| Regression demo | Local branch `demo/false-success-regression`: one line reports accepted as completed. S01 passes, S06 and S20 fail | Shows why happy-path tests are not enough |
+
 ### Second review: code corrections
 
 | Review point | Bug in the old code | Fix | Where |

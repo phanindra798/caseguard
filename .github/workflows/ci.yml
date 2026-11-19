@@ -33,6 +33,9 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-java@v5
         with: { distribution: temurin, java-version: "21", cache: maven }
+      - name: Download dependencies (retried, see scripts/ci-build-jars.sh)
+        run: |
+          for i in 1 2 3 4; do ./mvnw -B -q -U dependency:go-offline && exit 0; sleep $((i * 20)); done; exit 1
       - name: Build and test
         env:
           TEST_DB_URL: jdbc:postgresql://localhost:5432/caseguard_test
@@ -65,6 +68,9 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-java@v5
         with: { distribution: temurin, java-version: "21", cache: maven }
+      - name: Download dependencies (retried, see scripts/ci-build-jars.sh)
+        run: |
+          for i in 1 2 3 4; do ./mvnw -B -q -U dependency:go-offline && exit 0; sleep $((i * 20)); done; exit 1
       - name: Build and test
         env:
           TEST_DB_URL: jdbc:postgresql://localhost:5432/caseguard_test
@@ -96,9 +102,7 @@ jobs:
       - uses: actions/setup-java@v5
         with: { distribution: temurin, java-version: "21", cache: maven }
       - name: Build jars
-        run: |
-          (cd case-api && ./mvnw -B -q package -DskipTests)
-          (cd escalation-worker && ./mvnw -B -q package -DskipTests)
+        run: scripts/ci-build-jars.sh
       - name: Worker crashes after DB commit, before Kafka ack
         run: scripts/demo-crash-replay.sh worker
       - name: Relay crashes after publish, before marking outbox row
@@ -146,9 +150,7 @@ jobs:
       - name: Install agent
         run: pip install -e "agent[dev]"
       - name: Build jars
-        run: |
-          (cd case-api && ./mvnw -B -q package -DskipTests)
-          (cd escalation-worker && ./mvnw -B -q package -DskipTests)
+        run: scripts/ci-build-jars.sh
       - name: End-to-end tests
         env:
           PYTHON: python
@@ -185,9 +187,7 @@ jobs:
       - name: Checker and fault-proxy unit tests
         run: python -m pytest -q harness/tests
       - name: Build jars
-        run: |
-          (cd case-api && ./mvnw -B -q package -DskipTests)
-          (cd escalation-worker && ./mvnw -B -q package -DskipTests)
+        run: scripts/ci-build-jars.sh
       - name: Run all scenarios
         run: python -m caseguard_harness --report harness-report.md
       - name: Publish report

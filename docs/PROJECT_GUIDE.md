@@ -1509,7 +1509,8 @@ Model names are **placeholders until we verify what's available and affordable**
 | S23 | New: API refuses writes (503, nothing forwarded) → reconcile confirms nothing was created → honest reply | Covers the "confirmed not created" branch of reconcile against the real stack |
 | Evidence timing | Claims are checked against evidence observed before `reply.created_at` | A task completing after the reply must not make an earlier "done" pass |
 | Kafka failover time | S04 takes ~50 s: after a worker crash, Kafka waits for the consumer session timeout (45 s default) before reassigning partitions | Real behaviour, kept on purpose. Lower timeouts give faster failover but more false rebalances |
-| Regression demo | Local branch `demo/false-success-regression`: one line reports accepted as completed. S01 passes, S06 and S20 fail | Shows why happy-path tests are not enough |
+| CI download failures | `scripts/ci-build-jars.sh` and a retried "download dependencies" step in the Java jobs | Twice on GitHub, a job failed with "Could not transfer artifact" from Maven Central while the other jobs downloaded the same packages fine. Shared CI runners get throttled. A red build must mean "the code is wrong", so downloads are retried with growing pauses |
+| Regression demo | Branch `demo/false-success-regression`, open as PR #1 (never merged): one line reports accepted as completed. S01 passes; S05, S06 and S20 fail on GitHub | Shows why happy-path tests are not enough |
 
 ### Second review: code corrections
 

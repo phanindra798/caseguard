@@ -23,7 +23,8 @@ CaseGuard pairs an agent that **verifies before it claims** with a backend that 
 | 1.3 | Outbox relay → Kafka → worker with dedupe, dead-letter topic, **real crash-and-replay demo** | ✅ Done |
 | 1.4 | LangGraph agent: planner loop, eligibility in code, operation ids, reconcile, verify-before-claim | ✅ Done |
 | 1.5 | Regression harness: YAML scenarios, fault injection, claim checker, runs in CI | ✅ Done |
-| 2.x | Release 2: supervisor approval (interrupt/resume), durable conversations, vector policy search, tracing | ⏳ Next |
+| 2.1 | Supervisor approval with pause/resume (LangGraph `interrupt`), backend-enforced approval binding, durable conversations (PostgreSQL), supervisor page | ✅ Done |
+| 2.2 | Vector policy search (pgvector), multi-turn guardrails, OpenTelemetry tracing | ⏳ Next |
 
 ## The agent
 
@@ -63,6 +64,41 @@ agent> I couldn't find order 2001 on your account.
 
 **LLM modes:** `scripted` (default) is a deterministic rule-based brain used for tests and CI. `live` uses any chat model through LangChain's provider-neutral `init_chat_model` (set `CASEGUARD_LLM=live` and `CASEGUARD_MODEL=<provider>:<model>`, and install that provider's LangChain package). No provider is hardcoded.
 
+## Supervisor approval (pause and resume)
+
+Orders over $500 need a supervisor. The agent asks, **pauses** (LangGraph `interrupt`), and continues when a
+supervisor decides. After the pause it trusts nothing it remembers: it re-reads the approval, the case and the
+policy from the source of truth, and only then escalates **with** the approval, which the backend checks again.
+
+```
+you>   Order 1099 is late, please escalate it.
+   [tool] POST /cases/C-1099/approvals -> 201 ok
+agent> Order 1099 qualifies for escalation, but because it's over $500, policy ESC-3@v2 requires a
+       supervisor's approval first. I've sent the request (reference 7e957570-...) and I'll continue
+       as soon as a supervisor decides.                                   [paused: waiting for approval]
+
+you>   Any news?
+agent> Your escalation is still waiting for a supervisor's approval (reference 7e957570-...).
+
+   [supervisor sup-maria] APPROVED approval 7e957570-...
+   [tool] GET /approvals/7e957570-...      -> 200 ok      (really APPROVED?)
+   [tool] GET /cases/C-1099                -> 200 ok      (case unchanged since the request?)
+   [tool] POST /cases/C-1099/escalations   -> 202 ok      (with the approval id)
+agent> I've escalated order 1099 to our tier-2 support team and a specialist task has been created ...
+```
+
+| Rule | Where it's enforced |
+|---|---|
+| An approval is bound to **one operation id, one case version, one policy version**, and expires | Case API (`requireValidApproval`), returns `403 approval_required` with `why` |
+| Supervisors only see and decide **their own tenant's** approvals, **once** | Case API |
+| Requesting the approval and waiting for it are **separate graph nodes**: on resume LangGraph re-runs the waiting node, which has no side effects | Agent |
+| The resume signal is **not trusted**: a "resume" while the approval is still PENDING just keeps waiting | Agent (`revalidate`) |
+| The case or policy changed while waiting → the old approval is void, a **new operation id** gets a fresh approval | Agent + Case API |
+| Conversations are stored in **PostgreSQL**: an agent restart while waiting resumes with the **same** operation id | Agent (LangGraph `PostgresSaver`) |
+
+Supervisor page: http://localhost:8090/supervisor?as=sup-maria (pending approvals with Approve / Reject;
+deciding resumes the customer's conversation). In `make chat`, `/approve` and `/reject` act as the supervisor.
+
 ## The regression harness
 
 The harness runs **scenario files** against the **real** stack (Case API, Kafka, worker, PostgreSQL) and checks
@@ -97,10 +133,14 @@ final:
   PASS  S07  A model that always says "done" is caught by the claim checker
   PASS  S08  Another company's order is invisible and nothing is written
   PASS  S10  Ambiguous request, agent asks which order, then proceeds
+  PASS  S12  Expensive order pauses for a supervisor, resumes after approval
+  PASS  S13  Case edited while waiting, the old approval is void and a fresh one is requested
+  PASS  S14  Agent restarts while waiting, resumes from PostgreSQL with the same operation id
   PASS  S19  Every response lost, reconcile finds the escalation, no second action
   PASS  S20  Second case gets its own operation id and never borrows the first case's proof
   PASS  S23  API down for writes, reconcile confirms nothing was created, honest reply
-12/12 scenarios passed.
+  PASS  S24  Supervisor rejects, the agent says so and nothing is escalated
+16/16 scenarios passed.
 ```
 
 **Faults** come from an HTTP-aware fault proxy between the agent and the Case API ("let the POST reach the server,
@@ -234,6 +274,10 @@ API docs (Swagger UI): http://localhost:8081/swagger-ui.html
 | `POST /cases/{id}/escalations` | **202** new · **200** replay · **409** `already_open` / `case_not_open` / `operation_conflict` · **404** · **400** |
 | `GET /escalations/{id}` | The caller's escalation and its status (agent's *verify* step) |
 | `GET /escalations?operationId=...` | The escalation an operation created, or empty (agent's *reconcile* step) |
+| `POST /cases/{id}/approvals` | Ask a supervisor (idempotent by operation id; `409 case_changed` if the case moved on) |
+| `GET /approvals/{id}` | The caller's approval and its status |
+| `GET /supervisor/approvals` | Pending approvals of the supervisor's tenant (`X-Supervisor-Id`) |
+| `POST /supervisor/approvals/{id}/decision` | `APPROVED` / `REJECTED`, once; `409 already_decided` / `approval_expired` |
 
 Every request must carry `X-Tenant-Id` and `X-Customer-Id` (set from the trusted session, never by the LLM). Errors are [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) ProblemDetail JSON with a stable machine-readable `code`. The full contract is committed as [`case-api/openapi.json`](case-api/openapi.json) and checked by a test.
 
@@ -250,12 +294,15 @@ Every request must carry `X-Tenant-Id` and `X-Customer-Id` (set from the trusted
 | Worker (7) | One event → one task; duplicate delivery skipped; crash after commit → redelivered and skipped; crash before commit → rolled back and redone; poison message → dead-letter topic without blocking the partition; wrong tenant rejected; `UNIQUE(escalation_id)` as the last safety net |
 | Crash demos (2) | Real JVM kills of the worker and the relay; exactly one task afterwards |
 | Agent scenarios (18) | Happy path; not eligible; worker down → "pending"; timeout → retry with the **same** operation id; all retries time out → **reconcile** finds the write, no fallback; confirmed not created; still unknown → honest "couldn't confirm"; ambiguous → asks, then proceeds; no unnecessary questions; second case gets a **new** id and another case's proof is never used; already escalated; approval needed; other tenant → 404; prompt injection; LLM can't call write tools or change identity; step budget; over-claiming model caught |
+| Approvals, Java (14) | Bound to operation, case version and policy; replay; stale case version refused; supervisors scoped to their tenant and can decide once; expiry; the escalation endpoint refuses missing, pending, rejected, expired, foreign, wrong-operation, wrong-case-version and wrong-policy approvals |
+| Approvals, agent (7) | Pause then complete; rejected; a lying resume signal is ignored; a customer message while waiting keeps the pause; case edited while waiting → new operation and fresh approval; restart while waiting resumes the same operation; cheap orders need no approval |
+| Durable conversations (1) | Two independent PostgreSQL checkpointers ("two processes"): the second resumes what the first paused |
 | Agent units (6) | Business days skip weekends and holidays; expired policy never chosen; region filter beats keyword match |
 | Harness checkers (16) | Unsupported, late or wrong-subject claims; text over-claims; tool order, counts and operation ids; decisions; DB and event checks; the fault proxy really forwards, loses and refuses |
-| Harness scenarios (12) | The full list above, against the real stack with real faults |
+| Harness scenarios (16) | The full list above, against the real stack with real faults |
 | Agent end-to-end (5) | Against the **real** Case API + Kafka + worker: escalation verified `REQUESTED → COMPLETED`; second conversation gets `already_open`; decline; cross-tenant 404; ambiguity uses the real order list |
 
-Tests were also verified by **breaking the code on purpose**: removing the ownership filter fails 4 tests; disabling the worker's dedupe fails the duplicate and crash tests; reusing one operation id for a whole conversation fails the two-case test; a new id per retry fails both retry tests; and removing the Java "already open" check still passes because the **database's partial unique index** blocks duplicates on its own.
+Tests were also verified by **breaking the code on purpose**: removing the ownership filter fails 4 tests; disabling the worker's dedupe fails the duplicate and crash tests; reusing one operation id for a whole conversation fails the two-case test; a new id per retry fails both retry tests; skipping the case-version re-check after the pause fails S13; removing the backend's approval guard fails 7 tests; and removing the Java "already open" check still passes because the **database's partial unique index** blocks duplicates on its own.
 
 ## Design decisions
 

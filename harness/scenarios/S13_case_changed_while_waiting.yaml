@@ -1,0 +1,25 @@
+id: S13
+title: Case edited while waiting, the old approval is void and a fresh one is requested
+turns:
+  - say: "Order 1099 is late, please escalate it."
+    expect:
+      waiting: true
+      claims: {one_of: [[approval_requested]]}
+  - supervisor: {decision: APPROVED}
+    before:
+      - sql: "update cases set version = version + 1, subject = 'Tent delivery delay (customer called)' where id = 'C-1099'"
+    expect:
+      waiting: true
+      decisions: {includes: [revalidate]}
+      tools: {excludes: [request_escalation]}
+      claims: {one_of: [[approval_requested]], case_id: C-1099}
+  - supervisor: {decision: APPROVED}
+    expect:
+      waiting: false
+      claims: {one_of: [[escalation_completed], [escalation_pending]], case_id: C-1099}
+final:
+  db:
+    - {sql: "select count(*) from approvals", equals: 2}
+    - {sql: "select count(*) from escalations", equals: 1}
+    # the escalation used the SECOND approval's operation, the one bound to case version 1
+    - {sql: "select a.case_version from escalations e join approvals a on a.operation_id = e.operation_id", equals: 1}

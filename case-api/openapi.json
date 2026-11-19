@@ -6,6 +6,80 @@
     "version" : "0.2.0"
   },
   "paths" : {
+    "/supervisor/approvals/{approvalId}/decision" : {
+      "post" : {
+        "tags" : [ "approval-controller" ],
+        "summary" : "Approve or reject (once only)",
+        "operationId" : "decide",
+        "parameters" : [ {
+          "name" : "approvalId",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "string",
+            "format" : "uuid"
+          }
+        }, {
+          "name" : "X-Tenant-Id",
+          "in" : "header",
+          "description" : "Tenant (company) id from the trusted session",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        }, {
+          "name" : "X-Supervisor-Id",
+          "in" : "header",
+          "description" : "Supervisor id from the trusted session",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        } ],
+        "requestBody" : {
+          "content" : {
+            "application/json" : {
+              "schema" : {
+                "$ref" : "#/components/schemas/DecisionRequest"
+              }
+            }
+          },
+          "required" : true
+        },
+        "responses" : {
+          "200" : {
+            "description" : "Decision recorded",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/ApprovalDto"
+                }
+              }
+            }
+          },
+          "404" : {
+            "description" : "not_found (or another tenant's approval)",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409" : {
+            "description" : "already_decided | approval_expired",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/cases/{caseId}/escalations" : {
       "post" : {
         "tags" : [ "escalation-controller" ],
@@ -84,6 +158,16 @@
               }
             }
           },
+          "403" : {
+            "description" : "approval_required (has `why`): order over the limit without a matching APPROVED approval",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
           "404" : {
             "description" : "not_found (missing or not the caller's case)",
             "content" : {
@@ -100,6 +184,136 @@
               "*/*" : {
                 "schema" : {
                   "$ref" : "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/cases/{caseId}/approvals" : {
+      "post" : {
+        "tags" : [ "approval-controller" ],
+        "summary" : "Ask a supervisor to approve an escalation (idempotent by Idempotency-Key = operation id)",
+        "operationId" : "request_1",
+        "parameters" : [ {
+          "name" : "caseId",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        }, {
+          "name" : "Idempotency-Key",
+          "in" : "header",
+          "required" : true,
+          "schema" : {
+            "type" : "string",
+            "format" : "uuid"
+          }
+        }, {
+          "name" : "X-Tenant-Id",
+          "in" : "header",
+          "description" : "Tenant (company) id from the trusted session",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        }, {
+          "name" : "X-Customer-Id",
+          "in" : "header",
+          "description" : "Customer id from the trusted session",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        } ],
+        "requestBody" : {
+          "content" : {
+            "application/json" : {
+              "schema" : {
+                "$ref" : "#/components/schemas/ApprovalRequest"
+              }
+            }
+          },
+          "required" : true
+        },
+        "responses" : {
+          "201" : {
+            "description" : "Approval requested, status PENDING",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/ApprovalDto"
+                }
+              }
+            }
+          },
+          "200" : {
+            "description" : "Replay: this operation already asked",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/ApprovalDto"
+                }
+              }
+            }
+          },
+          "404" : {
+            "description" : "not_found",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409" : {
+            "description" : "case_changed | operation_conflict",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/supervisor/approvals" : {
+      "get" : {
+        "tags" : [ "approval-controller" ],
+        "summary" : "Pending approvals of the supervisor's tenant, oldest first",
+        "operationId" : "pending",
+        "parameters" : [ {
+          "name" : "X-Tenant-Id",
+          "in" : "header",
+          "description" : "Tenant (company) id from the trusted session",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        }, {
+          "name" : "X-Supervisor-Id",
+          "in" : "header",
+          "description" : "Supervisor id from the trusted session",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        } ],
+        "responses" : {
+          "200" : {
+            "description" : "OK",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "type" : "array",
+                  "items" : {
+                    "$ref" : "#/components/schemas/ApprovalDto"
+                  }
                 }
               }
             }
@@ -374,25 +588,64 @@
           }
         }
       }
+    },
+    "/approvals/{approvalId}" : {
+      "get" : {
+        "tags" : [ "approval-controller" ],
+        "summary" : "Get one of the caller's approvals",
+        "operationId" : "get_1",
+        "parameters" : [ {
+          "name" : "approvalId",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "string",
+            "format" : "uuid"
+          }
+        }, {
+          "name" : "X-Tenant-Id",
+          "in" : "header",
+          "description" : "Tenant (company) id from the trusted session",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        }, {
+          "name" : "X-Customer-Id",
+          "in" : "header",
+          "description" : "Customer id from the trusted session",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        } ],
+        "responses" : {
+          "200" : {
+            "description" : "OK",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/ApprovalDto"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components" : {
     "schemas" : {
-      "EscalationRequest" : {
+      "DecisionRequest" : {
         "type" : "object",
         "properties" : {
-          "reason" : {
-            "type" : "string",
-            "maxLength" : 1000,
-            "minLength" : 0
-          },
-          "policyRef" : {
+          "decision" : {
             "type" : "string",
             "minLength" : 1,
-            "pattern" : "^[A-Z]+-\\d+@v\\d+$"
+            "pattern" : "APPROVED|REJECTED"
           }
         },
-        "required" : [ "policyRef", "reason" ]
+        "required" : [ "decision" ]
       },
       "ProblemDetail" : {
         "type" : "object",
@@ -420,6 +673,73 @@
             "additionalProperties" : { }
           }
         }
+      },
+      "ApprovalDto" : {
+        "type" : "object",
+        "properties" : {
+          "id" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "caseId" : {
+            "type" : "string"
+          },
+          "operationId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "caseVersion" : {
+            "type" : "integer",
+            "format" : "int32"
+          },
+          "policyRef" : {
+            "type" : "string"
+          },
+          "reason" : {
+            "type" : "string"
+          },
+          "conversationRef" : {
+            "type" : "string"
+          },
+          "status" : {
+            "type" : "string"
+          },
+          "decidedBy" : {
+            "type" : "string"
+          },
+          "decidedAt" : {
+            "type" : "string",
+            "format" : "date-time"
+          },
+          "createdAt" : {
+            "type" : "string",
+            "format" : "date-time"
+          },
+          "expiresAt" : {
+            "type" : "string",
+            "format" : "date-time"
+          }
+        }
+      },
+      "EscalationRequest" : {
+        "type" : "object",
+        "properties" : {
+          "reason" : {
+            "type" : "string",
+            "maxLength" : 1000,
+            "minLength" : 0
+          },
+          "policyRef" : {
+            "type" : "string",
+            "minLength" : 1,
+            "pattern" : "^[A-Z]+-\\d+@v\\d+$"
+          },
+          "approvalId" : {
+            "type" : "string",
+            "format" : "uuid"
+          }
+        },
+        "required" : [ "policyRef", "reason" ]
       },
       "EscalationDto" : {
         "type" : "object",
@@ -453,6 +773,31 @@
             "format" : "date-time"
           }
         }
+      },
+      "ApprovalRequest" : {
+        "type" : "object",
+        "properties" : {
+          "caseVersion" : {
+            "type" : "integer",
+            "format" : "int32"
+          },
+          "policyRef" : {
+            "type" : "string",
+            "minLength" : 1,
+            "pattern" : "^[A-Z]+-\\d+@v\\d+$"
+          },
+          "reason" : {
+            "type" : "string",
+            "maxLength" : 1000,
+            "minLength" : 0
+          },
+          "conversationRef" : {
+            "type" : "string",
+            "maxLength" : 200,
+            "minLength" : 0
+          }
+        },
+        "required" : [ "caseVersion", "policyRef", "reason" ]
       },
       "OrderDto" : {
         "type" : "object",

@@ -1,6 +1,8 @@
 package dev.caseguard.caseapi.web;
 
 import dev.caseguard.caseapi.identity.CallerIdentity;
+import dev.caseguard.caseapi.identity.SupervisorIdentity;
+import java.util.Arrays;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.info.Info;
 import io.swagger.v3.oas.models.media.StringSchema;
@@ -16,7 +18,7 @@ public class OpenApiConfig {
 
   static {
     // CallerIdentity is filled by our resolver from headers; it is not a real request parameter.
-    SpringDocUtils.getConfig().addRequestWrapperToIgnore(CallerIdentity.class);
+    SpringDocUtils.getConfig().addRequestWrapperToIgnore(CallerIdentity.class, SupervisorIdentity.class);
   }
 
   @Bean
@@ -33,10 +35,17 @@ public class OpenApiConfig {
   @Bean
   OperationCustomizer identityHeaders() {
     return (operation, handlerMethod) -> {
+      boolean supervisor = Arrays.stream(handlerMethod.getMethodParameters())
+          .anyMatch(p -> p.getParameterType().equals(SupervisorIdentity.class));
       operation.addParametersItem(new HeaderParameter().name(CallerIdentity.TENANT_HEADER)
           .required(true).schema(new StringSchema()).description("Tenant (company) id from the trusted session"));
-      operation.addParametersItem(new HeaderParameter().name(CallerIdentity.CUSTOMER_HEADER)
-          .required(true).schema(new StringSchema()).description("Customer id from the trusted session"));
+      if (supervisor) {
+        operation.addParametersItem(new HeaderParameter().name(SupervisorIdentity.SUPERVISOR_HEADER)
+            .required(true).schema(new StringSchema()).description("Supervisor id from the trusted session"));
+      } else {
+        operation.addParametersItem(new HeaderParameter().name(CallerIdentity.CUSTOMER_HEADER)
+            .required(true).schema(new StringSchema()).description("Customer id from the trusted session"));
+      }
       return operation;
     };
   }

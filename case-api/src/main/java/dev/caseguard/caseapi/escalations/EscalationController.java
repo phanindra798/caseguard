@@ -47,6 +47,8 @@ public class EscalationController {
   @ApiResponse(responseCode = "200", description = "Replay: this operation already created this escalation")
   @ApiResponse(responseCode = "400", description = "missing_identity | missing_idempotency_key | invalid_request",
       content = @Content(schema = @Schema(implementation = ProblemDetail.class)))
+  @ApiResponse(responseCode = "403", description = "approval_required (has `why`): order over the limit without a matching APPROVED approval",
+      content = @Content(schema = @Schema(implementation = ProblemDetail.class)))
   @ApiResponse(responseCode = "404", description = "not_found (missing or not the caller's case)",
       content = @Content(schema = @Schema(implementation = ProblemDetail.class)))
   @ApiResponse(responseCode = "409", description = "already_open (has existingEscalationId) | case_not_open | operation_conflict",

@@ -155,6 +155,10 @@ jobs:
         env:
           PYTHON: python
         run: scripts/e2e-agent.sh
+      - name: Durable conversations (PostgreSQL checkpointer)
+        env:
+          CASEGUARD_TEST_PG: postgresql://caseguard:caseguard@localhost:5432/caseguard_test
+        run: python -m pytest -q agent/tests/test_durable_checkpoints.py
 
   harness:
     # The regression harness: every scenario file against the REAL stack, with fault injection.
@@ -233,3 +237,15 @@ jobs:
           done
           cat reply.json
           grep -q escalation_declined reply.json
+      - name: Approval flow through the agent container (customer → supervisor → resumed reply)
+        run: |
+          curl -sf -X POST localhost:8090/chat -H "Content-Type: application/json" \
+            -d '{"session":"demo-asha","conversation_id":"ci-approval","message":"Order 1099 is late, please escalate it."}' \
+            | tee step1.json
+          grep -q approval_requested step1.json
+          APPROVAL=$(python3 -c "import json;print(json.load(open('step1.json'))['waiting_for_approval'])")
+          curl -sf -X POST localhost:8090/supervisor/decide \
+            -d "as=sup-maria&approval_id=$APPROVAL&decision=APPROVED" | tee step2.html
+          grep -qi "escalat" step2.html
+          curl -sf localhost:8090/conversations/ci-approval | tee step3.json
+          python3 -c "import json;d=json.load(open('step3.json'));assert d['waiting_for_approval'] is None;assert len(d['messages'])==3"

@@ -1,8 +1,10 @@
 package dev.caseguard.caseapi.escalations;
 
+import dev.caseguard.caseapi.approvals.ApprovalService;
 import dev.caseguard.caseapi.cases.CaseRepository;
 import dev.caseguard.caseapi.cases.SupportCase;
 import dev.caseguard.caseapi.identity.CallerIdentity;
+import dev.caseguard.caseapi.orders.OrderRepository;
 import dev.caseguard.caseapi.outbox.OutboxEvent;
 import dev.caseguard.caseapi.outbox.OutboxRepository;
 import dev.caseguard.caseapi.reliability.FailPoints;
@@ -12,6 +14,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.json.JsonMapper;
@@ -24,7 +27,8 @@ import tools.jackson.databind.json.JsonMapper;
  *  2. replay        - has THIS operation id been seen?    yes -> same request? 200 : 409 conflict
  *  3. case state    - is the case OPEN?                   no  -> 409 case_not_open
  *  4. one open      - is an escalation open?              ours -> 200 replay, other -> 409 already_open
- *  5. write         - escalation row + outbox row, ONE transaction -> 202
+ *  5. approval      - order over the limit?               needs a VALID approval, else 403 approval_required
+ *  6. write         - escalation row + outbox row, ONE transaction -> 202
  * </pre>
  */
 @Service
@@ -34,14 +38,22 @@ public class EscalationService {
   public static final String FAIL_AFTER_ESCALATION_INSERT = "API_AFTER_ESCALATION_INSERT";
 
   private final CaseRepository cases;
+  private final OrderRepository orders;
+  private final ApprovalService approvals;
+  private final long approvalOverCents;
   private final EscalationRepository escalations;
   private final OutboxRepository outbox;
   private final FailPoints failPoints;
   private final JsonMapper json;
 
-  public EscalationService(CaseRepository cases, EscalationRepository escalations,
-                           OutboxRepository outbox, FailPoints failPoints, JsonMapper json) {
+  public EscalationService(CaseRepository cases, OrderRepository orders, ApprovalService approvals,
+                           @Value("${caseguard.approval.over-cents:50000}") long approvalOverCents,
+                           EscalationRepository escalations, OutboxRepository outbox,
+                           FailPoints failPoints, JsonMapper json) {
     this.cases = cases;
+    this.orders = orders;
+    this.approvals = approvals;
+    this.approvalOverCents = approvalOverCents;
     this.escalations = escalations;
     this.outbox = outbox;
     this.failPoints = failPoints;
@@ -77,7 +89,15 @@ public class EscalationService {
       throw new AlreadyOpenException(open.get().getId());
     }
 
-    // 5. Write the business row AND the outbox row in the SAME transaction.
+    // 5. Expensive orders need a supervisor's approval for THIS operation, case version and policy.
+    //    Enforced HERE, in the backend, so no client (or confused agent) can skip it.
+    long amount = orders.findByIdAndTenantIdAndCustomerId(kase.getOrderId(), caller.tenantId(), caller.customerId())
+        .orElseThrow(NotFoundException::new).getAmountCents();
+    if (amount > approvalOverCents) {
+      approvals.requireValidApproval(caller, kase, operationId, req.policyRef(), req.approvalId());
+    }
+
+    // 6. Write the business row AND the outbox row in the SAME transaction.
     Escalation e = Escalation.requested(caller.tenantId(), caller.customerId(), caseId,
         operationId, req.reason(), req.policyRef());
     escalations.saveAndFlush(e);   // flush now: constraint violations surface here, not at commit

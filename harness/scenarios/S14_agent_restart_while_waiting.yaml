@@ -1,0 +1,17 @@
+id: S14
+title: Agent restarts while waiting, resumes from PostgreSQL with the same operation id
+turns:
+  - say: "Order 1099 is late, please escalate it."
+    expect:
+      waiting: true
+      claims: {one_of: [[approval_requested]]}
+  - supervisor: {decision: APPROVED}
+    before: [restart_agent]          # a brand-new agent: nothing in memory, only the database
+    expect:
+      waiting: false
+      claims: {one_of: [[escalation_completed], [escalation_pending]], case_id: C-1099}
+final:
+  db:
+    - {sql: "select count(*) from approvals", equals: 1}
+    - {sql: "select count(*) from escalations", equals: 1}
+    - {sql: "select e.operation_id = a.operation_id from escalations e, approvals a", equals: true}

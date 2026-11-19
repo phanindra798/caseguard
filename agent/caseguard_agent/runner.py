@@ -1,11 +1,16 @@
-"""Run one conversation turn and report everything that happened during it.
+"""Run one conversation turn (or resume a paused one) and report everything that happened.
 
-The result is what the harness (Phase 1.5) inspects: the reply and its claims, the planner's
-decisions, every Case API call, and the evidence collected.
+The result is what the harness inspects: the reply and its claims, the planner's decisions, every
+Case API call, and the evidence collected.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+
+from langgraph.types import Command
+
+from .models import utcnow
 
 
 @dataclass(frozen=True)
@@ -20,16 +25,48 @@ class AgentRunner:
     def __init__(self, graph):
         self.graph = graph
 
+    @staticmethod
+    def _config(conversation_id: str) -> dict:
+        return {"configurable": {"thread_id": conversation_id}}
+
+    def waiting_for_approval(self, conversation_id: str) -> str | None:
+        """The approval id this conversation is paused on, or None."""
+        snap = self.graph.get_state(self._config(conversation_id))
+        if snap.next and "wait_for_approval" in snap.next:
+            return str((snap.values.get("approval") or {}).get("id"))
+        return None
+
     def turn(self, conversation_id: str, session: Session, message: str) -> dict:
-        config = {"configurable": {"thread_id": conversation_id}}
+        waiting = self.waiting_for_approval(conversation_id)
+        if waiting:
+            # Don't restart the graph: that would abandon the paused approval flow. Answer from state.
+            values = self.graph.get_state(self._config(conversation_id)).values
+            case_id = (values.get("case") or {}).get("id")
+            text = (f"Your escalation is still waiting for a supervisor's approval (reference {waiting}). "
+                    "I'll continue as soon as they decide.")
+            claims = [{"type": "approval_requested", "escalation_id": None, "case_id": case_id}]
+            return {"reply": {"text": text, "claims": claims, "policy_cited": None, "allowed_claims": claims,
+                              "created_at": utcnow().isoformat()},
+                    "decisions": [], "tool_calls": [], "evidence": [],
+                    "all_evidence": values.get("evidence", []), "operations": values.get("operations", {}),
+                    "waiting_for_approval": waiting}
+        return self._run(conversation_id, {
+            "tenant_id": session.tenant_id, "customer_id": session.customer_id, "region": session.region,
+            "messages": [{"role": "user", "content": message}]})
+
+    def resume(self, conversation_id: str, signal: dict) -> dict:
+        """Continue a paused conversation (e.g. after a supervisor decided)."""
+        if not self.waiting_for_approval(conversation_id):
+            raise ValueError(f"conversation {conversation_id} is not waiting for an approval")
+        # Sent as a JSON STRING on purpose: Command(resume=<dict>) is read as a map of interrupt ids to
+        # values, so a plain dict (e.g. an empty {}) would silently resume nothing and pause again.
+        return self._run(conversation_id, Command(resume=json.dumps(signal)))
+
+    def _run(self, conversation_id: str, graph_input) -> dict:
+        config = self._config(conversation_id)
         before = self.graph.get_state(config).values or {}
         seen = {k: len(before.get(k, [])) for k in ("decisions", "tool_calls", "evidence")}
-
-        final = self.graph.invoke(
-            {"tenant_id": session.tenant_id, "customer_id": session.customer_id, "region": session.region,
-             "messages": [{"role": "user", "content": message}]},
-            config)
-
+        final = self.graph.invoke(graph_input, config)
         return {
             "reply": final["reply"],
             "decisions": final.get("decisions", [])[seen["decisions"]:],
@@ -37,4 +74,8 @@ class AgentRunner:
             "evidence": final.get("evidence", [])[seen["evidence"]:],
             "all_evidence": final.get("evidence", []),
             "operations": final.get("operations", {}),
+            "waiting_for_approval": self.waiting_for_approval(conversation_id),
         }
+
+    def messages(self, conversation_id: str) -> list[dict]:
+        return self.graph.get_state(self._config(conversation_id)).values.get("messages", [])

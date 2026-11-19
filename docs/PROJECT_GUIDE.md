@@ -1512,6 +1512,22 @@ Model names are **placeholders until we verify what's available and affordable**
 | CI download failures | `scripts/ci-build-jars.sh` and a retried "download dependencies" step in the Java jobs | Twice on GitHub, a job failed with "Could not transfer artifact" from Maven Central while the other jobs downloaded the same packages fine. Shared CI runners get throttled. A red build must mean "the code is wrong", so downloads are retried with growing pauses |
 | Regression demo | Branch `demo/false-success-regression`, open as PR #1 (never merged): one line reports accepted as completed. S01 passes; S05, S06 and S20 fail on GitHub | Shows why happy-path tests are not enough |
 
+### Implementation notes from Phase 2.1 (approval and durable conversations)
+
+| Topic | What was built | Why |
+|---|---|---|
+| Approval limit | Case API config `caseguard.approval.over-cents` (500 dollars) | The backend must enforce the rule, so it needs to know the limit. A real system would read it per tenant from a policy table |
+| Binding | Approval stores operation id, case version, policy ref, expiry; `requireValidApproval` checks all of them plus owner and status | An approval for one exact action, never "an approval for something on this case" |
+| Supervisor identity | `X-Tenant-Id` + `X-Supervisor-Id`, scoped to the tenant; decisions are final (`already_decided`) | Same trust model as customers; no cross-tenant decisions |
+| Resuming the right conversation | The approval stores an opaque `conversationRef` (the agent's thread id) | The supervisor action knows which paused conversation to wake |
+| Separate nodes | `create_approval` (side effect) → `announce_approval` → `wait_for_approval` (`interrupt`) → `revalidate` | LangGraph re-runs the interrupted node from the top on resume |
+| Resume value as a JSON string | `Command(resume=json.dumps(signal))` | Found while testing: `Command(resume={})` is read as a map of interrupt ids, so an empty dict resumed nothing and the graph paused again |
+| Don't trust the wake-up | `revalidate` re-reads approval status, case version and current policy from the Case API | A resume could be early, duplicated or forged |
+| Stale approval | New operation id → back to `check_eligibility` → fresh approval | The supervisor must approve what is true now |
+| Messages while waiting | The runner answers "still waiting" from the checkpoint without running the graph | Running the graph from START would abandon the paused flow |
+| Durable state | `PostgresSaver` with a connection pool, selected by `CASEGUARD_CHECKPOINT_DB` | A paused conversation survives restarts and deployments |
+| Supervisor page | Plain server-rendered HTML forms in the agent app | One page, two buttons; no JavaScript framework needed |
+
 ### Second review: code corrections
 
 | Review point | Bug in the old code | Fix | Where |

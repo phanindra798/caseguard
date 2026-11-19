@@ -86,7 +86,7 @@ class ScriptedLLM:
         return ReplyDraft(text=text, claims=allowed, policy_cited=f.get("policy_ref") if kind in _CITES else None)
 
 
-_CITES = {"escalation_completed", "escalation_pending", "escalation_declined", "approval_required"}
+_CITES = {"escalation_completed", "escalation_pending", "escalation_declined", "approval_requested"}
 
 _TEMPLATES = {
     "escalation_completed": lambda f: (
@@ -108,9 +108,13 @@ _TEMPLATES = {
     "escalation_declined": lambda f: (
         f"Order {f['order_id']} is {f['days_late']} business day(s) late. Under policy {f['policy_ref']} an escalation "
         f"is possible after more than {f['policy_min_days']} business days, so I can't escalate it yet."),
-    "approval_required": lambda f: (
+    "approval_requested": lambda f: (
         f"Order {f['order_id']} qualifies for escalation, but because it's over $500, policy {f['policy_ref']} "
-        "requires a supervisor's approval first, and I can't request that approval yet."),
+        f"requires a supervisor's approval first. I've sent the request (reference {f['approval_id']}) and "
+        "I'll continue as soon as a supervisor decides."),
+    "approval_rejected": lambda f: (
+        f"A supervisor reviewed the escalation for order {f['order_id']} and decided not to approve it, "
+        "so I haven't escalated it. Our support team can tell you more about the next steps."),
     "case_not_open": lambda f: f"The support case for order {f['order_id']} is closed, so it can't be escalated.",
     "needs_more_info": lambda f: f["question"],
     "refused": lambda f: f.get("refusal") or "Sorry, I can't help with that request.",

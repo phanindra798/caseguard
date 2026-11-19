@@ -31,6 +31,8 @@ class FakeCaseApi:
                                      subject="late", status="OPEN", version=0)
                       for o, v in self.orders.items()}
         self.escalations: dict[str, dict] = {}
+        self.approvals: dict[str, dict] = {}
+        self.approval_over_cents = 50000
         # --- misbehaviour switches ---
         self.worker = "instant"          # "instant": COMPLETED on first status read; "down": stays REQUESTED
         self.timeout_after_write = 0     # next N successful POSTs: server acts, then the response is lost
@@ -69,6 +71,16 @@ class FakeCaseApi:
         if method == "GET" and path.startswith("/orders/"):
             o = self.orders.get(path.split("/")[2])
             return httpx.Response(200, json=self._public(o)) if self._owned(o, tenant, customer) \
+                else self._problem(404, "not_found")
+        if method == "GET" and path.startswith("/cases/") and path.count("/") == 2:
+            c = self.cases.get(path.split("/")[2])
+            return httpx.Response(200, json=self._public(c)) if self._owned(c, tenant, customer) \
+                else self._problem(404, "not_found")
+        if method == "POST" and path.endswith("/approvals"):
+            return self._post_approval(req, path.split("/")[2], tenant, customer)
+        if method == "GET" and path.startswith("/approvals/"):
+            a = self.approvals.get(path.split("/")[2])
+            return httpx.Response(200, json=self._public(a)) if self._owned(a, tenant, customer) \
                 else self._problem(404, "not_found")
         if method == "GET" and path == "/cases":
             oid = req.url.params.get("orderId")
@@ -112,6 +124,10 @@ class FakeCaseApi:
         if open_:
             return self._problem(409, "already_open", existingEscalationId=open_["id"])
         body = json.loads(req.content)
+        if self.orders[case["orderId"]]["amountCents"] > self.approval_over_cents:
+            why = self._approval_problem(body.get("approvalId"), case, op, body["policyRef"], tenant, customer)
+            if why:
+                return self._problem(403, "approval_required", why=why)
         e = dict(id=str(uuid.uuid4()), caseId=case_id, operationId=op, status="REQUESTED",
                  reason=body["reason"], policyRef=body["policyRef"], tenant=tenant, customer=customer)
         self.escalations[e["id"]] = e
@@ -123,3 +139,52 @@ class FakeCaseApi:
             self.timeout_after_write -= 1
             raise httpx.ReadTimeout("response lost after the server acted", request=req)
         return resp
+
+    # ------------------------------------------------------------------ approvals
+    def _post_approval(self, req, case_id, tenant, customer) -> httpx.Response:
+        op = req.headers.get("Idempotency-Key")
+        case = self.cases.get(case_id)
+        if not self._owned(case, tenant, customer):
+            return self._problem(404, "not_found")
+        same = next((a for a in self.approvals.values() if a["operationId"] == op), None)
+        if same:
+            if same["caseId"] != case_id or not self._owned(same, tenant, customer):
+                return self._problem(409, "operation_conflict")
+            return httpx.Response(200, json=self._public(same))
+        body = json.loads(req.content)
+        if body["caseVersion"] != case["version"]:
+            return self._problem(409, "case_changed")
+        a = dict(id=str(uuid.uuid4()), caseId=case_id, operationId=op, caseVersion=case["version"],
+                 policyRef=body["policyRef"], reason=body["reason"], conversationRef=body.get("conversationRef"),
+                 status="PENDING", expiresAt="2999-01-01T00:00:00+00:00", tenant=tenant, customer=customer)
+        self.approvals[a["id"]] = a
+        return httpx.Response(201, json=self._public(a))
+
+    def _approval_problem(self, approval_id, case, op, policy_ref, tenant, customer) -> str | None:
+        """Same binding rules as the Java ApprovalService.requireValidApproval."""
+        if not approval_id:
+            return "missing"
+        a = self.approvals.get(approval_id)
+        if not self._owned(a, tenant, customer):
+            return "not_found"
+        if a["caseId"] != case["id"]:
+            return "wrong_case"
+        if a["operationId"] != op:
+            return "wrong_operation"
+        if a["status"] != "APPROVED":
+            return a["status"].lower()
+        if a["caseVersion"] != case["version"]:
+            return "case_changed"
+        if a["policyRef"] != policy_ref:
+            return "policy_changed"
+        return None
+
+    # helpers for tests (what a supervisor / another employee would do)
+    def decide(self, approval_id: str, decision: str) -> None:
+        self.approvals[approval_id]["status"] = decision
+
+    def latest_approval(self) -> dict:
+        return list(self.approvals.values())[-1]
+
+    def edit_case(self, case_id: str) -> None:
+        self.cases[case_id]["version"] += 1

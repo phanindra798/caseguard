@@ -114,7 +114,7 @@ class OutboxRelayTest extends ApiTestBase {
   @DisplayName("two relays at once never publish the same row twice (FOR UPDATE SKIP LOCKED)")
   void concurrentRelaysDoNotDoublePublish() throws Exception {
     List<String> ids = new ArrayList<>();
-    for (String caseId : List.of("C-1042", "C-1050", "C-1099")) {
+    for (String caseId : List.of("C-1042", "C-1043", "C-1050")) {   // cheap orders: no approval needed
       ids.add(body(escalate("acme", "cust-A1", caseId, UUID.randomUUID())).get("id").asString());
     }
 

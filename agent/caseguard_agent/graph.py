@@ -7,10 +7,17 @@
                │ ask_customer / answer ─────────────────────────────────► compose_reply
                │ propose_escalation
                ▼
-          check_eligibility (CODE) ─(not eligible / approval / closed)──► compose_reply
-               │ eligible              └─(missing facts)──► plan
+          check_eligibility (CODE) ─(not eligible / closed)───────────────► compose_reply
+               │ eligible / needs approval   └─(missing facts)──► plan
                ▼
           prepare_action   operation id per action fingerprint, checkpointed BEFORE the write
+               │ needs approval:
+               │   create_approval ─► announce_approval ─► wait_for_approval (interrupt: PAUSE)
+               │                                              │ resumed by the supervisor's decision
+               │   revalidate (approval APPROVED? case + policy unchanged?) ◄┘
+               │     ├ rejected ──────────────────────────────────────────► compose_reply
+               │     ├ case/policy changed → new operation id ──► check_eligibility (ask again)
+               │     └ valid ──► execute (with approval id)
                ▼
             execute ─ accepted / already_open ──► verify ──────────────► compose_reply
                └─ unknown (timeouts) ──► reconcile ─ found ──► verify
@@ -22,20 +29,23 @@ Code decides WHAT IS ALLOWED and WHAT IS TRUE. The harness checks both.
 """
 from __future__ import annotations
 
+import json
 import operator
 import re
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from typing import Annotated, Any, Callable, TypedDict
 
+from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import interrupt
 
 from .business_days import business_days_late
-from .case_api import (AlreadyOpen, CaseApiClient, CaseApiError, CaseNotOpen, NotFound,
-                       OperationConflict, Unavailable)
+from .case_api import (AlreadyOpen, ApprovalRequired, CaseApiClient, CaseApiError, CaseChanged,
+                       CaseNotOpen, NotFound, OperationConflict, Unavailable)
 from .llm.base import AgentLLM
 from .models import READ_TOOLS, Claim, Evidence, PlanStep, dump, utcnow
 from .policies import Policy, search_policy
@@ -63,6 +73,10 @@ class AgentState(TypedDict, total=False):
     case: dict | None
     policy: dict | None
     operations: dict            # {fingerprint: {"id": uuid, "status": ...}}
+    approval: dict | None       # the supervisor approval for the current operation (Case API view)
+    approval_phase: str | None  # "requested" while the customer is being told "sent for approval"
+    approval_check: str | None  # revalidate's verdict: valid | pending | rejected | stale | unavailable
+    approval_signal: dict | None  # what the resume carried (informational; the Case API is the truth)
     # Per-turn working fields (reset by the guardrail node at the start of every turn).
     steps: int
     next: dict | None
@@ -113,11 +127,13 @@ def allowed_claims(state: AgentState) -> list[dict]:
     case_id = (state.get("case") or {}).get("id")
     if state.get("blocked"):
         return [dump(Claim(type="refused"))]
+    if state.get("approval_phase") == "requested":
+        return [dump(Claim(type="approval_requested", case_id=case_id))]
     if (state.get("next") or {}).get("action") == "ask_customer":
         return [dump(Claim(type="needs_more_info"))]
     elig = state.get("eligibility")
-    if elig in ("not_eligible", "approval_required", "case_not_open"):
-        kind = {"not_eligible": "escalation_declined", "approval_required": "approval_required",
+    if elig in ("not_eligible", "approval_rejected", "case_not_open"):
+        kind = {"not_eligible": "escalation_declined", "approval_rejected": "approval_rejected",
                 "case_not_open": "case_not_open"}[elig]
         return [dump(Claim(type=kind, case_id=case_id))]
 
@@ -126,7 +142,7 @@ def allowed_claims(state: AgentState) -> list[dict]:
         return [dump(Claim(type="refused"))] if state.get("not_found_order") else []
     if outcome == "unknown":
         return [dump(Claim(type="escalation_unconfirmed", case_id=case_id))]
-    if outcome == "not_created":
+    if outcome in ("not_created", "approval_refused", "approval_unavailable"):
         return [dump(Claim(type="escalation_not_submitted", case_id=case_id))]
     if outcome in ("not_found", "error"):
         return [dump(Claim(type="refused"))]
@@ -153,7 +169,8 @@ def build_graph(deps: AgentDeps, checkpointer: Any = None):
     def guardrail(state: AgentState) -> dict:
         reset = {"steps": 0, "next": None, "blocked": False, "not_found_order": None, "no_case": False,
                  "read_error": None, "eligibility": None, "days_late": None, "decision_reason": None,
-                 "current_op": None, "execute_outcome": None, "escalation": None, "reply": None}
+                 "current_op": None, "execute_outcome": None, "escalation": None, "reply": None,
+                 "approval_phase": None, "approval_check": None}
         if "operations" not in state:
             reset["operations"] = {}
         if _INJECTION.search(_latest_user(state)):
@@ -231,11 +248,11 @@ def build_graph(deps: AgentDeps, checkpointer: Any = None):
         limit = policy["min_business_days_late"]
         if order["status"] in ("DELIVERED", "CANCELLED") or days <= limit:
             return {"eligibility": "not_eligible", "days_late": days}
-        approval_over = policy.get("approval_over_cents")
-        if approval_over is not None and order["amountCents"] > approval_over:
-            return {"eligibility": "approval_required", "days_late": days}
         reason = (f"Order {order['id']} is {days} business days late "
                   f"(policy {policy['ref']}: escalate after more than {limit}).")
+        approval_over = policy.get("approval_over_cents")
+        if approval_over is not None and order["amountCents"] > approval_over:
+            return {"eligibility": "needs_approval", "days_late": days, "decision_reason": reason}
         return {"eligibility": "eligible", "days_late": days, "decision_reason": reason}
 
     # ------------------------------------------------------------------ prepare_action
@@ -258,8 +275,10 @@ def build_graph(deps: AgentDeps, checkpointer: Any = None):
             attempts = len(deps.retry_delays) + 1
             for attempt in range(attempts):
                 try:
+                    approval_id = (state.get("approval") or {}).get("id") \
+                        if state.get("eligibility") == "needs_approval" else None
                     esc = client.request_escalation(state["case"]["id"], op_id, state["decision_reason"],
-                                                    state["policy"]["ref"])
+                                                    state["policy"]["ref"], approval_id)
                     update = {"execute_outcome": "accepted", "escalation": esc,
                               "evidence": [_escalation_evidence(esc, "request_escalation")]}
                     break
@@ -277,6 +296,10 @@ def build_graph(deps: AgentDeps, checkpointer: Any = None):
                     break
                 except CaseNotOpen:
                     update = {"execute_outcome": None, "eligibility": "case_not_open"}
+                    break
+                except ApprovalRequired:
+                    # The backend's own check said no (e.g. a race after revalidate). Nothing was written.
+                    update = {"execute_outcome": "approval_refused"}
                     break
                 except NotFound:
                     update = {"execute_outcome": "not_found"}
@@ -330,8 +353,85 @@ def build_graph(deps: AgentDeps, checkpointer: Any = None):
             client.close()
         return {"evidence": evidence, "tool_calls": client.trace}
 
+    # ------------------------------------------------------------------ create_approval
+    def create_approval(state: AgentState, config: RunnableConfig) -> dict:
+        """Ask a supervisor. A SIDE EFFECT, so it lives in its own node: LangGraph re-runs the whole
+        node that calls interrupt() on resume, and that must never create a second request.
+        The Case API call is also idempotent (same operation id → same approval)."""
+        op_id = state["operations"][state["current_op"]]["id"]
+        case, policy = state["case"], state["policy"]
+        conversation = config["configurable"]["thread_id"]
+        client = api(state)
+        try:
+            try:
+                a = client.request_approval(case["id"], op_id, case["version"], policy["ref"],
+                                            state["decision_reason"], conversation)
+            except CaseChanged:
+                case = client.get_case(case["id"])           # someone edited the case: use what is true now
+                a = client.request_approval(case["id"], op_id, case["version"], policy["ref"],
+                                            state["decision_reason"], conversation)
+            update = {"approval": a, "case": case}
+        except (Unavailable, CaseApiError):
+            update = {"approval": None, "execute_outcome": "approval_unavailable"}
+        finally:
+            client.close()
+        update["tool_calls"] = client.trace
+        return update
+
+    # ------------------------------------------------------------------ announce_approval
+    def announce_approval(state: AgentState) -> dict:
+        """Tell the customer, BEFORE pausing, exactly what is true: it has been sent for approval."""
+        return compose({**state, "approval_phase": "requested"}) | {"approval_phase": "requested"}
+
+    # ------------------------------------------------------------------ wait_for_approval
+    def wait_for_approval(state: AgentState) -> dict:
+        """PAUSE. The graph stops here and its state is checkpointed. It continues when someone calls
+        Command(resume=...). On resume LangGraph re-runs this node from the top, which is safe because
+        it has no side effects. What the resume carries is NOT trusted: revalidate asks the Case API."""
+        raw = interrupt({"approval_id": state["approval"]["id"], "case_id": state["case"]["id"]})
+        return {"approval_signal": json.loads(raw) if isinstance(raw, str) else raw}
+
+    # ------------------------------------------------------------------ revalidate
+    def revalidate(state: AgentState) -> dict:
+        """After the pause: is the approval really APPROVED, and does it still match the world?"""
+        client = api(state)
+        try:
+            a = client.get_approval(state["approval"]["id"])
+            update: dict[str, Any] = {"approval": a, "approval_phase": None}
+            if a["status"] == "PENDING":
+                update["approval_check"] = "pending"            # woken too early: keep waiting
+            elif a["status"] == "REJECTED":
+                update.update(approval_check="rejected", eligibility="approval_rejected")
+            else:
+                fresh_case = client.get_case(state["case"]["id"])
+                fresh = search_policy(deps.policies, "late delivery escalation", state["region"], deps.today())
+                expired = datetime.fromisoformat(a["expiresAt"]) < utcnow()
+                changed = [why for why, bad in (
+                    ("the case changed", fresh_case["version"] != a["caseVersion"]),
+                    ("the policy changed", fresh is None or fresh.ref != a["policyRef"]),
+                    ("the approval expired", expired)) if bad]
+                if changed:
+                    # The old approval is void. New operation id → a fresh approval for the new facts.
+                    ops = dict(state["operations"])
+                    ops[state["current_op"]] = {"id": str(uuid.uuid4()), "status": "NEW"}
+                    update.update(approval_check="stale", approval=None, operations=ops, case=fresh_case,
+                                  policy=fresh.summary() if fresh else None,
+                                  decisions=[{"action": "revalidate", "tool": None, "args": {}, "question": None,
+                                              "reason": f"{' and '.join(changed)} while waiting; asking again"}])
+                else:
+                    update.update(approval_check="valid", case=fresh_case)
+        except (Unavailable, CaseApiError):
+            update = {"approval_check": "unavailable", "approval_phase": None}   # can't tell: keep waiting
+        finally:
+            client.close()
+        update["tool_calls"] = client.trace
+        return update
+
     # ------------------------------------------------------------------ compose_reply
     def compose_reply(state: AgentState) -> dict:
+        return compose(state)
+
+    def compose(state: AgentState) -> dict:
         order, case, policy = state.get("order") or {}, state.get("case") or {}, state.get("policy") or {}
         op = (state.get("operations") or {}).get(state.get("current_op") or "", {})
         refusal = None
@@ -348,6 +448,7 @@ def build_graph(deps: AgentDeps, checkpointer: Any = None):
             "policy_min_days": policy.get("min_business_days_late"), "days_late": state.get("days_late"),
             "escalation_id": str(state["escalation"]["id"]) if state.get("escalation") else None,
             "operation_id": op.get("id"), "question": (state.get("next") or {}).get("question"),
+            "approval_id": (state.get("approval") or {}).get("id"),
             "refusal": refusal,
         }
         allowed = allowed_claims(state)
@@ -363,6 +464,8 @@ def build_graph(deps: AgentDeps, checkpointer: Any = None):
     for name, fn in [("guardrail", guardrail), ("plan", plan), ("run_read_tool", run_read_tool),
                      ("check_eligibility", check_eligibility), ("prepare_action", prepare_action),
                      ("execute", execute), ("reconcile", reconcile), ("verify", verify),
+                     ("create_approval", create_approval), ("announce_approval", announce_approval),
+                     ("wait_for_approval", wait_for_approval), ("revalidate", revalidate),
                      ("compose_reply", compose_reply)]:
         g.add_node(name, fn)
 
@@ -373,8 +476,17 @@ def build_graph(deps: AgentDeps, checkpointer: Any = None):
         "propose_escalation": "check_eligibility"}[s["next"]["action"]])
     g.add_edge("run_read_tool", "plan")                       # the agent loop: read, then decide again
     g.add_conditional_edges("check_eligibility", lambda s: {
-        "eligible": "prepare_action", "missing_facts": "plan"}.get(s["eligibility"], "compose_reply"))
-    g.add_edge("prepare_action", "execute")
+        "eligible": "prepare_action", "needs_approval": "prepare_action",
+        "missing_facts": "plan"}.get(s["eligibility"], "compose_reply"))
+    g.add_conditional_edges("prepare_action", lambda s: "create_approval" if s["eligibility"] == "needs_approval"
+                            else "execute")
+    g.add_conditional_edges("create_approval", lambda s: "compose_reply" if not s.get("approval")
+                            else "announce_approval" if s["approval"]["status"] == "PENDING" else "revalidate")
+    g.add_edge("announce_approval", "wait_for_approval")
+    g.add_edge("wait_for_approval", "revalidate")
+    g.add_conditional_edges("revalidate", lambda s: {
+        "valid": "execute", "rejected": "compose_reply", "stale": "check_eligibility",
+        "pending": "wait_for_approval", "unavailable": "wait_for_approval"}[s["approval_check"]])
     g.add_conditional_edges("execute", lambda s: {
         "accepted": "verify", "already_open": "verify", "unknown": "reconcile"}.get(s.get("execute_outcome"),
                                                                                     "compose_reply"))

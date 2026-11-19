@@ -26,6 +26,9 @@ spring:
 caseguard:
   topics:
     escalation-requested: escalation.requested
+  approval:
+    over-cents: 50000      # orders above $500 need a supervisor's approval (per-tenant config in a real system)
+    ttl-hours: 24
   relay:
     enabled: ${RELAY_ENABLED:true}
     interval-ms: 200

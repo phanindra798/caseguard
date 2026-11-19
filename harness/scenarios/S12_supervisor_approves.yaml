@@ -1,0 +1,19 @@
+id: S12
+title: Expensive order pauses for a supervisor, resumes after approval
+turns:
+  - say: "Order 1099 is late, please escalate it."
+    expect:
+      waiting: true
+      tools: {excludes: [request_escalation], counts: {request_approval: 1}}
+      claims: {one_of: [[approval_requested]], case_id: C-1099}
+  - supervisor: {decision: APPROVED}
+    expect:
+      waiting: false
+      tools: {in_order: [get_approval, get_case, request_escalation, get_escalation_status]}
+      claims: {one_of: [[escalation_completed], [escalation_pending]], case_id: C-1099}
+final:
+  db:
+    - {sql: "select count(*) from approvals", equals: 1}
+    - {sql: "select status from approvals", equals: APPROVED}
+    - {sql: "select count(*) from escalations", equals: 1}
+    - {sql: "select e.operation_id = a.operation_id from escalations e, approvals a", equals: true}

@@ -1,5 +1,9 @@
 package dev.caseguard.caseapi.web;
 
+import dev.caseguard.caseapi.approvals.ApprovalExceptions.AlreadyDecidedException;
+import dev.caseguard.caseapi.approvals.ApprovalExceptions.ApprovalExpiredException;
+import dev.caseguard.caseapi.approvals.ApprovalExceptions.ApprovalRequiredException;
+import dev.caseguard.caseapi.approvals.ApprovalExceptions.CaseChangedException;
 import dev.caseguard.caseapi.escalations.AlreadyOpenException;
 import dev.caseguard.caseapi.escalations.CaseNotOpenException;
 import dev.caseguard.caseapi.escalations.OperationConflictException;
@@ -24,7 +28,9 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
  * <pre>
  *  400 missing_identity | missing_idempotency_key | invalid_request
  *  404 not_found
- *  409 already_open | case_not_open | operation_conflict
+ *  403 approval_required (+ why: missing | not_found | wrong_case | wrong_operation | pending | rejected
+ *                              | expired | case_changed | policy_changed)
+ *  409 already_open | case_not_open | operation_conflict | case_changed | already_decided | approval_expired
  * </pre>
  */
 @RestControllerAdvice
@@ -88,6 +94,28 @@ public class ApiExceptionHandler {
   ProblemDetail operationConflict(OperationConflictException e) {
     return problem(HttpStatus.CONFLICT, "operation_conflict",
         "This Idempotency-Key was already used for a different request");
+  }
+
+  @ExceptionHandler(ApprovalRequiredException.class)
+  ProblemDetail approvalRequired(ApprovalRequiredException e) {
+    ProblemDetail pd = problem(HttpStatus.FORBIDDEN, "approval_required", e.getMessage());
+    pd.setProperty("why", e.getWhy());
+    return pd;
+  }
+
+  @ExceptionHandler(CaseChangedException.class)
+  ProblemDetail caseChanged(CaseChangedException e) {
+    return problem(HttpStatus.CONFLICT, "case_changed", e.getMessage());
+  }
+
+  @ExceptionHandler(AlreadyDecidedException.class)
+  ProblemDetail alreadyDecided(AlreadyDecidedException e) {
+    return problem(HttpStatus.CONFLICT, "already_decided", e.getMessage());
+  }
+
+  @ExceptionHandler(ApprovalExpiredException.class)
+  ProblemDetail expired(ApprovalExpiredException e) {
+    return problem(HttpStatus.CONFLICT, "approval_expired", e.getMessage());
   }
 
   private static ProblemDetail problem(HttpStatus status, String code, String detail) {

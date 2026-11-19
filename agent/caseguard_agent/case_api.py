@@ -40,12 +40,24 @@ class OperationConflict(CaseApiError):
     """Same Idempotency-Key used for a different request. Always a bug on our side."""
 
 
+class ApprovalRequired(CaseApiError):
+    """403: the backend refused because no VALID approval matches. `why` says which binding failed."""
+    @property
+    def why(self) -> str:
+        return str(self.body.get("why"))
+
+
+class CaseChanged(CaseApiError):
+    """409: the case is no longer in the version we based our decision on."""
+
+
 class Unavailable(Exception):
     """Timeout / connection error / 5xx. The request MAY have been executed."""
 
 
 _ERRORS = {"not_found": NotFound, "already_open": AlreadyOpen, "case_not_open": CaseNotOpen,
-           "operation_conflict": OperationConflict}
+           "operation_conflict": OperationConflict, "approval_required": ApprovalRequired,
+           "case_changed": CaseChanged}
 
 
 class CaseApiClient:
@@ -97,6 +109,12 @@ class CaseApiClient:
     def get_cases(self, order_id: str) -> list[dict]:
         return self._call("get_cases", "GET", "/cases", params={"orderId": order_id})
 
+    def get_case(self, case_id: str) -> dict:
+        return self._call("get_case", "GET", f"/cases/{case_id}")
+
+    def get_approval(self, approval_id: str) -> dict:
+        return self._call("get_approval", "GET", f"/approvals/{approval_id}")
+
     def get_escalation(self, escalation_id: str) -> dict:
         return self._call("get_escalation_status", "GET", f"/escalations/{escalation_id}")
 
@@ -106,6 +124,42 @@ class CaseApiClient:
         return found[0] if found else None
 
     # ---------------------------------------------------------------- write
-    def request_escalation(self, case_id: str, operation_id: str, reason: str, policy_ref: str) -> dict:
+    def request_escalation(self, case_id: str, operation_id: str, reason: str, policy_ref: str,
+                           approval_id: str | None = None) -> dict:
+        body = {"reason": reason, "policyRef": policy_ref}
+        if approval_id:
+            body["approvalId"] = approval_id
         return self._call("request_escalation", "POST", f"/cases/{case_id}/escalations",
-                          operation_id=operation_id, json={"reason": reason, "policyRef": policy_ref})
+                          operation_id=operation_id, json=body)
+
+    def request_approval(self, case_id: str, operation_id: str, case_version: int, policy_ref: str,
+                         reason: str, conversation_ref: str) -> dict:
+        """Ask a supervisor. Idempotent: the SAME operation id returns the same approval."""
+        return self._call("request_approval", "POST", f"/cases/{case_id}/approvals", operation_id=operation_id,
+                          json={"caseVersion": case_version, "policyRef": policy_ref, "reason": reason,
+                                "conversationRef": conversation_ref})
+
+
+class SupervisorClient:
+    """The supervisor's side: list pending approvals of their tenant and decide them."""
+
+    def __init__(self, base_url: str, tenant_id: str, supervisor_id: str, *,
+                 transport: httpx.BaseTransport | None = None, timeout_s: float = 5.0):
+        self._http = httpx.Client(base_url=base_url, transport=transport, timeout=timeout_s,
+                                  headers={"X-Tenant-Id": tenant_id, "X-Supervisor-Id": supervisor_id})
+
+    def close(self) -> None:
+        self._http.close()
+
+    def pending(self) -> list[dict]:
+        r = self._http.get("/supervisor/approvals")
+        r.raise_for_status()
+        return r.json()
+
+    def decide(self, approval_id: str, decision: str) -> dict:
+        r = self._http.post(f"/supervisor/approvals/{approval_id}/decision", json={"decision": decision})
+        if r.status_code >= 400:
+            body = r.json() if r.content else {}
+            raise _ERRORS.get(body.get("code"), CaseApiError)(body.get("code", f"http_{r.status_code}"),
+                                                              r.status_code, body)
+        return r.json()

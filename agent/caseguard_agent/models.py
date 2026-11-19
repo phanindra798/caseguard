@@ -17,7 +17,8 @@ ClaimType = Literal[
     "escalation_unconfirmed",   # we could not find out whether it went through
     "escalation_not_submitted", # confirmed: nothing was created
     "escalation_declined",      # policy says not eligible
-    "approval_required",        # eligible, but needs a supervisor (approval flow comes in Release 2)
+    "approval_requested",       # eligible, sent to a supervisor; waiting for the decision
+    "approval_rejected",        # a supervisor said no
     "case_not_open",            # the case is closed
     "needs_more_info",          # we asked the customer a question
     "refused",                  # blocked by a guardrail, or not the customer's data

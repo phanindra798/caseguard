@@ -41,7 +41,8 @@ public abstract class ApiTestBase {
     jdbc.update("delete from processed_events");
     jdbc.update("delete from outbox");
     jdbc.update("delete from escalations");
-    jdbc.update("update cases set status = 'OPEN'");
+    jdbc.update("delete from approvals");
+    jdbc.update("update cases set status = 'OPEN', version = 0");   // some tests bump the version
   }
 
   @AfterEach
@@ -75,6 +76,16 @@ public abstract class ApiTestBase {
         .POST(HttpRequest.BodyPublishers.ofString(body));
     if (key != null) {
       b.header(EscalationController.IDEMPOTENCY_HEADER, key);
+    }
+    return http.send(b.build(), HttpResponse.BodyHandlers.ofString());
+  }
+
+  protected HttpResponse<String> send(String method, String path, String body, String... headers) throws Exception {
+    HttpRequest.Builder b = HttpRequest.newBuilder(URI.create("http://localhost:" + port + path))
+        .header("Content-Type", "application/json")
+        .method(method, body == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofString(body));
+    for (int i = 0; i < headers.length; i += 2) {
+      b.header(headers[i], headers[i + 1]);
     }
     return http.send(b.build(), HttpResponse.BodyHandlers.ofString());
   }

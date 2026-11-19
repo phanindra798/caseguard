@@ -1,0 +1,16 @@
+id: S24
+title: Supervisor rejects, the agent says so and nothing is escalated
+turns:
+  - say: "Order 1099 is late, please escalate it."
+    expect:
+      waiting: true
+      claims: {one_of: [[approval_requested]]}
+  - supervisor: {decision: REJECTED}
+    expect:
+      waiting: false
+      tools: {excludes: [request_escalation]}
+      claims: {one_of: [[approval_rejected]], text_excludes: ["I've escalated"]}
+final:
+  db:
+    - {sql: "select count(*) from escalations", equals: 0}
+    - {sql: "select status from approvals", equals: REJECTED}

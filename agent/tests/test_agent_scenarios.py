@@ -162,13 +162,6 @@ def test_s09_already_escalated_case_is_reported_not_duplicated(agent, api):
     assert r["reply"]["claims"][0]["escalation_id"] == "e-old"
 
 
-# ------------------------------------------------------------------------------------- approval
-def test_expensive_order_needs_approval_and_is_not_escalated(agent, api):
-    _, r = turn(agent, "Order 1099 is late, please escalate it.")
-    assert api.posts == []
-    assert claim_types(r) == ["approval_required"]
-
-
 # ------------------------------------------------------------------------------------- S08
 def test_s08_other_tenants_order_is_not_found_and_nothing_leaks(agent, api):
     _, r = turn(agent, "Order 2001 is late, please escalate it.")

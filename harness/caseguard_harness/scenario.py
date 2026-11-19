@@ -2,7 +2,8 @@
 
 A scenario (YAML) has:
   setup     actions before the conversation (stop the worker, arm a fail point, add proxy faults)
-  turns     what the customer says, actions between turns, and per-turn expectations
+  turns     what the customer says (`say`) or what a supervisor decides (`supervisor`), actions
+            between turns, and per-turn expectations
   recovery  actions after the conversation (restart a crashed service) + a condition to wait for
   final     database / Kafka / log checks once the system has settled
   expect_harness_failures   for "test the tester" scenarios: the codes the checkers MUST report
@@ -17,7 +18,8 @@ from pathlib import Path
 import yaml
 from confluent_kafka import Consumer, TopicPartition
 
-from caseguard_agent.case_api import CaseApiClient
+from caseguard_agent.case_api import CaseApiClient, SupervisorClient
+from caseguard_agent.checkpoints import make_checkpointer
 from caseguard_agent.graph import AgentDeps, build_graph
 from caseguard_agent.llm import ScriptedLLM
 from caseguard_agent.policies import load_policies
@@ -55,9 +57,17 @@ class ScenarioRunner:
     def __init__(self, stack: Stack, proxy: FaultProxy):
         self.stack, self.proxy = stack, proxy
         self.policies = load_policies()
+        self.agent: AgentRunner | None = None
+        self._llm_mode = "scripted"
+        self._checkpointer = None
 
     # ------------------------------------------------------------------ agent
     def _agent(self, llm_mode: str) -> AgentRunner:
+        """A fresh agent PROCESS: new graph, new connection pool, conversations only in PostgreSQL."""
+        if self._checkpointer is not None:
+            self._checkpointer.conn.close()
+        self._checkpointer = make_checkpointer(self.stack.cfg.checkpoint_url)
+        self._llm_mode = llm_mode
         llm = ScriptedLLM(overclaim=(llm_mode == "overclaim"))
         deps = AgentDeps(
             llm=llm,
@@ -65,7 +75,7 @@ class ScenarioRunner:
             policies=self.policies,
             retry_delays=(0.2, 0.4),
             poll_delays=(0.5, 1, 1.5, 2, 3))
-        return AgentRunner(build_graph(deps))
+        return AgentRunner(build_graph(deps, checkpointer=self._checkpointer))
 
     # ------------------------------------------------------------------ actions
     def _act(self, action) -> None:
@@ -82,12 +92,30 @@ class ScenarioRunner:
         elif name == "wait_api_crash":
             code = self.stack.wait_api_exit(timeout=60)
             assert code != 0, "case-api was expected to crash"
+        elif name == "restart_agent":
+            self.agent = self._agent(self._llm_mode)          # the old agent object is simply dropped
+        elif name == "sql":
+            self.stack.execute(arg)
         elif name == "fault":
             self.proxy.add(Fault(**arg))
         elif name == "sleep":
             time.sleep(float(arg))
         else:
             raise ValueError(f"unknown action {name}")
+
+    # ------------------------------------------------------------------ supervisor
+    def _supervisor_decides(self, session: Session, conversation: str, decision: str) -> dict:
+        """A supervisor of the same tenant decides the newest pending approval, then the paused
+        conversation is resumed, exactly what the agent's /supervisor page does."""
+        sup = SupervisorClient(self.proxy.url, session.tenant_id, "sup-harness")
+        try:
+            pending = sup.pending()
+            assert pending, "no approval is pending"
+            approval = sup.decide(pending[-1]["id"], decision)
+        finally:
+            sup.close()
+        assert approval["conversationRef"] == conversation, "approval points at another conversation"
+        return self.agent.resume(conversation, {"approval_id": approval["id"]})
 
     # ------------------------------------------------------------------ kafka
     def _deliveries_by_key(self) -> dict[str, int]:
@@ -124,15 +152,20 @@ class ScenarioRunner:
         try:
             for a in sc.get("setup", []):
                 self._act(a)
-            agent = self._agent(sc.get("llm", "scripted"))
+            self.agent = self._agent(sc.get("llm", "scripted"))
             session = SESSIONS[sc.get("session", "asha")]
             conversation = str(uuid.uuid4())
 
             for i, t in enumerate(sc["turns"], 1):
                 for a in t.get("before", []):
                     self._act(a)
-                r = agent.turn(conversation, session, t["say"])
-                result.turns.append({"say": t["say"], "reply": r["reply"]["text"],
+                if "supervisor" in t:
+                    r = self._supervisor_decides(session, conversation, t["supervisor"]["decision"])
+                    said = f"[supervisor] {t['supervisor']['decision']}"
+                else:
+                    r = self.agent.turn(conversation, session, t["say"])
+                    said = t["say"]
+                result.turns.append({"say": said, "reply": r["reply"]["text"],
                                      "claims": [c["type"] for c in r["reply"]["claims"]],
                                      "decisions": [f"{d['action']} {d.get('tool') or ''}".strip() for d in r["decisions"]],
                                      "tools": [f"{c['method']} {c['path']} -> {c['status'] or c['outcome']}"
@@ -142,6 +175,9 @@ class ScenarioRunner:
                 failures += [prefix + e for e in checks.check_decisions(exp.get("decisions", {}), r["decisions"])]
                 failures += [prefix + e for e in checks.check_tools(exp.get("tools", {}), r["tool_calls"])]
                 failures += [prefix + e for e in checks.check_claims(exp.get("claims", {}), r["reply"], r["all_evidence"])]
+                if "waiting" in exp and bool(r.get("waiting_for_approval")) != exp["waiting"]:
+                    failures.append(prefix + f"WAITING_STATE: expected waiting={exp['waiting']}, "
+                                             f"got {r.get('waiting_for_approval')!r}")
                 for a in t.get("after", []):
                     self._act(a)
 

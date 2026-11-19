@@ -39,6 +39,11 @@ class StackConfig:
     def jdbc_url(self) -> str:
         return f"jdbc:postgresql://{self.pg_host}:5432/{self.database}"
 
+    @property
+    def checkpoint_url(self) -> str:
+        """Where the agent keeps conversations (same database, LangGraph's own tables)."""
+        return f"postgresql://{self.pg_user}:{self.pg_password}@{self.pg_host}:5432/{self.database}"
+
     def dsn(self, database: str | None = None) -> str:
         return (f"host={self.pg_host} user={self.pg_user} password={self.pg_password} "
                 f"dbname={database or self.database}")
@@ -145,6 +150,10 @@ class Stack:
         with psycopg.connect(self.cfg.dsn(), autocommit=True) as conn:
             return conn.execute(query).fetchone()[0]
 
+    def execute(self, statement: str) -> None:
+        with psycopg.connect(self.cfg.dsn(), autocommit=True) as conn:
+            conn.execute(statement)
+
     def wait_until(self, query: str, timeout: float) -> bool:
         deadline = time.time() + timeout
         while time.time() < deadline:
@@ -163,5 +172,5 @@ class Stack:
                            where e.status = 'REQUESTED'
                              and exists (select 1 from outbox o where o.aggregate_id = e.id)""", timeout=5)
         with psycopg.connect(self.cfg.dsn(), autocommit=True) as conn:
-            conn.execute("truncate follow_up_tasks, processed_events, outbox, escalations")
-            conn.execute("update cases set status = 'OPEN'")
+            conn.execute("truncate follow_up_tasks, processed_events, outbox, escalations, approvals")
+            conn.execute("update cases set status = 'OPEN', version = 0")

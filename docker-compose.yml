@@ -70,7 +70,10 @@ services:
     environment:
       CASE_API_URL: http://case-api:8081
       CASEGUARD_LLM: scripted          # set to "live" + CASEGUARD_MODEL to use a real model
+      # Conversations live in PostgreSQL, so one paused for approval survives an agent restart.
+      CASEGUARD_CHECKPOINT_DB: postgresql://caseguard:caseguard@postgres:5432/caseguard
     ports:
       - "8090:8090"
     depends_on:
+      postgres: { condition: service_healthy }
       case-api: { condition: service_started }

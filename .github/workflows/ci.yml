@@ -259,15 +259,30 @@ jobs:
           python3 -c "import json;d=json.load(open('step3.json'));assert d['waiting_for_approval'] is None;assert len(d['messages'])==3"
       - name: Jaeger received ONE trace spanning agent, Case API and worker
         run: |
-          for i in $(seq 1 30); do
-            curl -sf "localhost:16686/api/traces?service=caseguard-agent&limit=50" > traces.json && python3 - <<'PY' && exit 0
-          import json, sys
-          traces = json.load(open("traces.json"))["data"]
+          check() {
+            python3 - <<'PY'
+          import json, sys, urllib.request
+          def get(path):
+              try:
+                  with urllib.request.urlopen("http://localhost:16686" + path, timeout=5) as r:
+                      return r.status, json.load(r)
+              except urllib.error.HTTPError as e:
+                  return e.code, None
+              except Exception as e:
+                  return str(e), None
+          status, services = get("/api/services")
+          print("GET /api/services ->", status, (services or {}).get("data"))
+          status, traces = get("/api/traces?service=caseguard-agent&limit=50")
+          data = (traces or {}).get("data") or []
           want = {"caseguard-agent", "case-api", "escalation-worker"}
-          best = max((({p["serviceName"] for p in t["processes"].values()}) for t in traces), key=len, default=set())
-          print("services in the most connected trace:", sorted(best))
+          best = max(({p["serviceName"] for p in t["processes"].values()} for t in data), key=len, default=set())
+          print("GET /api/traces ->", status, f"{len(data)} traces; most connected:", sorted(best))
           sys.exit(0 if want <= best else 1)
           PY
-            sleep 3
-          done
+          }
+          for i in $(seq 1 20); do check && exit 0; sleep 3; done
+          echo "---- diagnostics ----"
+          docker compose ps
+          docker compose logs --tail=30 jaeger
+          docker compose logs --tail=30 agent
           exit 1

@@ -96,6 +96,9 @@ services:
   # Trace viewer: http://localhost:16686 (search service "caseguard-agent").
   jaeger:
     image: jaegertracing/jaeger:2.22.0
+    environment:
+      # Listen on all interfaces: other containers send spans here and the host opens the UI.
+      JAEGER_LISTEN_HOST: 0.0.0.0
     ports:
       - "16686:16686"     # UI and query API
       - "4318:4318"       # OTLP over HTTP (what the services send to)

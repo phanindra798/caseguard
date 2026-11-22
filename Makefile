@@ -1,5 +1,5 @@
 # Common commands. Run `make help` to list them.
-.PHONY: help infra up down run test test-api test-worker test-agent agent-venv e2e chat harness harness-unit contract demo-worker demo-relay
+.PHONY: help infra up down run test test-api test-worker test-agent agent-venv e2e chat harness harness-unit harness-tracing otel-agent retrieval-eval contract demo-worker demo-relay
 
 help:            ## Show this list
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  make %-12s %s\n", $$1, $$2}'
@@ -41,6 +41,15 @@ harness-unit:    ## Unit tests for the harness's checkers and fault proxy
 
 harness:         ## Run every scenario file against the real stack (needs `make infra`, built jars)
 	agent/.venv/bin/python -m caseguard_harness --report harness-report.md
+
+otel-agent:      ## Download the OpenTelemetry Java agent into tools/ (checksum verified)
+	scripts/fetch-otel-agent.sh
+
+harness-tracing: ## All scenarios with every service traced; S26 checks one trace across all services
+	agent/.venv/bin/python -m caseguard_harness --tracing --report harness-report.md
+
+retrieval-eval:  ## Measure policy retrieval on the labelled queries in evals/retrieval.yaml
+	cd agent && .venv/bin/python -m caseguard_agent.retrieval_eval
 
 contract:        ## Regenerate case-api/openapi.json after an intentional API change
 	cd case-api && UPDATE_CONTRACT=true ./mvnw -B test -Dtest=ApiContractTest

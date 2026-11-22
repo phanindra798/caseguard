@@ -12,6 +12,10 @@ Environment:
     CASEGUARD_LLM            scripted (default) | live
     CASEGUARD_MODEL          for live mode: "<provider>:<model-name>" (LangChain init_chat_model format)
     CASEGUARD_CHECKPOINT_DB  postgresql://... to keep conversations across restarts (default: memory)
+    CASEGUARD_POLICY_SEARCH  keyword (default, best measured offline) | vector | hybrid
+    CASEGUARD_POLICY_DB      with vector search: postgresql://... to keep the vectors in pgvector
+    CASEGUARD_EMBEDDER       hashing (default, offline) | fastembed (semantic model)
+    OTEL_EXPORTER_OTLP_ENDPOINT  e.g. http://localhost:4318: send traces (Jaeger or any OTLP collector)
 """
 from __future__ import annotations
 
@@ -28,8 +32,9 @@ from .case_api import CaseApiClient, CaseApiError, SupervisorClient
 from .checkpoints import make_checkpointer
 from .graph import AgentDeps, build_graph
 from .llm import make_llm
-from .policies import load_policies
+from .policies import load_policies, make_policy_index
 from .runner import AgentRunner, Session
+from .tracing import setup_tracing
 
 CASE_API_URL = os.getenv("CASE_API_URL", "http://localhost:8081")
 
@@ -43,10 +48,12 @@ SUPERVISORS = {"sup-maria": "acme", "sup-gary": "globex"}     # supervisor id ->
 
 
 def make_runner() -> AgentRunner:
+    setup_tracing()                                   # on only if OTEL_EXPORTER_OTLP_ENDPOINT is set
     deps = AgentDeps(
         llm=make_llm(os.getenv("CASEGUARD_LLM", "scripted"), os.getenv("CASEGUARD_MODEL")),
         case_api=lambda tenant, customer: CaseApiClient(CASE_API_URL, tenant, customer),
-        policies=load_policies())
+        policies=load_policies(),
+        policy_index=make_policy_index())
     return AgentRunner(build_graph(deps, checkpointer=make_checkpointer()))
 
 

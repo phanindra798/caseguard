@@ -1,0 +1,29 @@
+# Labelled queries for policy retrieval: customer wording → the policy that should be found.
+# `today` decides which versions are in force; `region` must always be respected.
+- {q: "My order is late, please escalate it.",                    region: US, today: 2026-11-22, expect: ESC-3@v2}
+- {q: "The package still hasn't arrived.",                        region: US, today: 2026-11-22, expect: ESC-3@v2}
+- {q: "Where is my parcel? It's overdue.",                        region: US, today: 2026-11-22, expect: ESC-3@v2}
+- {q: "Delivery is delayed by more than a week.",                 region: US, today: 2026-11-22, expect: ESC-3@v2}
+- {q: "It was supposed to come last Monday and nothing came.",    region: US, today: 2026-11-22, expect: ESC-3@v2}
+- {q: "Can someone chase my late shipment?",                      region: US, today: 2026-11-22, expect: ESC-3@v2}
+- {q: "Order delayed, escalate please",                           region: US, today: 2026-11-22, expect: ESC-3@v2}
+- {q: "I want to send the jacket back and get my money back.",    region: US, today: 2026-11-22, expect: RET-1@v1}
+- {q: "How do I return an item for a refund?",                    region: US, today: 2026-11-22, expect: RET-1@v1}
+- {q: "What's your return window?",                               region: US, today: 2026-11-22, expect: RET-1@v1}
+- {q: "I changed my mind about the tent, can I return it?",       region: US, today: 2026-11-22, expect: RET-1@v1}
+- {q: "The tent arrived with a hole in it.",                      region: US, today: 2026-11-22, expect: DMG-2@v1}
+- {q: "The box was crushed and the shoes inside are broken.",     region: US, today: 2026-11-22, expect: DMG-2@v1}
+- {q: "The zipper on my jacket is faulty.",                       region: US, today: 2026-11-22, expect: DMG-2@v1}
+- {q: "My item came damaged.",                                    region: US, today: 2026-11-22, expect: DMG-2@v1}
+- {q: "I moved, can you send it to my new address?",              region: US, today: 2026-11-22, expect: ADR-1@v1}
+- {q: "I typed the wrong shipping address.",                      region: US, today: 2026-11-22, expect: ADR-1@v1}
+- {q: "Can the courier redirect my parcel?",                      region: US, today: 2026-11-22, expect: ADR-1@v1}
+# region filter: EU customers must get EU policies
+- {q: "My order is late, please escalate it.",                    region: EU, today: 2026-11-22, expect: ESC-4@v1}
+- {q: "I want a refund, can I send it back?",                     region: EU, today: 2026-11-22, expect: RET-2@v1}
+- {q: "The parcel still hasn't arrived.",                         region: EU, today: 2026-11-22, expect: ESC-4@v1}
+# date filter: in March 2026 the v1 escalation policy was the one in force
+- {q: "My order is late, please escalate it.",                    region: US, today: 2026-03-01, expect: ESC-3@v1}
+- {q: "Delivery is delayed by more than a week.",                 region: US, today: 2026-03-01, expect: ESC-3@v1}
+# no policy at all for an unknown region
+- {q: "My order is late.",                                        region: APAC, today: 2026-11-22, expect: null}

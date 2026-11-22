@@ -15,7 +15,8 @@ from pathlib import Path
 
 from .fault_proxy import FaultProxy
 from .scenario import ScenarioRunner, load_scenarios
-from .stack import Stack
+from .stack import OTEL_AGENT, Stack
+from .trace_collector import TraceCollector
 
 
 def render_report(results) -> str:
@@ -25,7 +26,8 @@ def render_report(results) -> str:
              "| Scenario | Result | Time | Notes |", "|---|---|---|---|"]
     for r in results:
         note = "; ".join(r.failures) if r.failures else (f"caught: {', '.join(r.caught)}" if r.caught else "")
-        lines.append(f"| {r.id} {r.title} | {'✅ pass' if r.passed else '❌ FAIL'} | {r.seconds}s | {note} |")
+        status = "⏭ skipped" if r.skipped else ("✅ pass" if r.passed else "❌ FAIL")
+        lines.append(f"| {r.id} {r.title} | {status} | {r.seconds}s | {r.skipped or note} |")
     lines.append("")
     for r in results:
         lines += [f"## {r.id} {r.title}", ""]
@@ -48,20 +50,32 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("-k", action="append", default=[], help="run only scenarios whose id starts with this")
     ap.add_argument("--report", type=Path, default=Path("harness-report.md"))
+    ap.add_argument("--tracing", action="store_true",
+                    help="run every service with OpenTelemetry and check traces (needs scripts/fetch-otel-agent.sh)")
     args = ap.parse_args(argv)
 
+    collector = None
+    if args.tracing:
+        if not OTEL_AGENT.exists():
+            ap.error(f"{OTEL_AGENT} missing: run scripts/fetch-otel-agent.sh")
+        import os
+        collector = TraceCollector()
+        os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = collector.endpoint
+        from caseguard_agent.tracing import setup_tracing
+        setup_tracing()
+
     scenarios = [s for s in load_scenarios() if not args.k or any(s["id"].startswith(k) for k in args.k)]
-    stack = Stack()
+    stack = Stack(otlp_endpoint=collector.endpoint if collector else None)
     print(f"starting stack (db {stack.cfg.database}, topic {stack.cfg.topic}, logs {stack.log_dir})", flush=True)
     stack.start()
     proxy = FaultProxy(stack.api_url).start()
     results = []
     try:
-        runner = ScenarioRunner(stack, proxy)
+        runner = ScenarioRunner(stack, proxy, collector)
         for sc in scenarios:
             r = runner.run(sc)
             results.append(r)
-            mark = "PASS" if r.passed else "FAIL"
+            mark = "SKIP" if r.skipped else ("PASS" if r.passed else "FAIL")
             print(f"  {mark}  {r.id:<4} {r.title} ({r.seconds}s)", flush=True)
             for f in r.failures:
                 print(f"        - {f}", flush=True)
@@ -71,9 +85,11 @@ def main(argv: list[str] | None = None) -> int:
 
     args.report.write_text(render_report(results))
     args.report.with_suffix(".json").write_text(json.dumps([r.__dict__ for r in results], indent=2, default=str))
-    passed = sum(r.passed for r in results)
-    print(f"\n{passed}/{len(results)} scenarios passed. Report: {args.report}")
-    return 0 if passed == len(results) else 1
+    passed = sum(r.passed and not r.skipped for r in results)
+    skipped = sum(bool(r.skipped) for r in results)
+    print(f"\n{passed}/{len(results) - skipped} scenarios passed"
+          f"{f', {skipped} skipped' if skipped else ''}. Report: {args.report}")
+    return 0 if all(r.passed for r in results) else 1
 
 
 if __name__ == "__main__":

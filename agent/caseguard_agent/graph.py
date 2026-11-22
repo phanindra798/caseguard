@@ -49,8 +49,9 @@ from .llm.base import AgentLLM
 from .models import READ_TOOLS, Claim, Evidence, PlanStep, dump, utcnow
 from .output_guard import violations
 from .replies import render_reply
+from .tracing import traced_node
 from .untrusted import scan
-from .policies import Policy, search_policy
+from .policies import ESCALATION_KIND, KeywordPolicyIndex, Policy, PolicyIndex
 
 IDENTITY_KEYS = {"tenant_id", "customer_id", "tenantId", "customerId", "region"}
 
@@ -99,6 +100,7 @@ class AgentDeps:
     llm: AgentLLM
     case_api: Callable[[str, str], CaseApiClient]     # (tenant_id, customer_id) -> client
     policies: list[Policy]
+    policy_index: PolicyIndex | None = None            # default: keyword search over `policies` (best measured)
     today: Callable[[], date] = date.today
     retry_delays: tuple[float, ...] = (0.5, 1.0)      # 3 attempts in total
     poll_delays: tuple[float, ...] = (0.5, 1.0, 2.0, 4.0)
@@ -135,9 +137,9 @@ def allowed_claims(state: AgentState) -> list[dict]:
     if (state.get("next") or {}).get("action") == "ask_customer":
         return [dump(Claim(type="needs_more_info"))]
     elig = state.get("eligibility")
-    if elig in ("not_eligible", "approval_rejected", "case_not_open"):
+    if elig in ("not_eligible", "approval_rejected", "case_not_open", "no_policy"):
         kind = {"not_eligible": "escalation_declined", "approval_rejected": "approval_rejected",
-                "case_not_open": "case_not_open"}[elig]
+                "case_not_open": "case_not_open", "no_policy": "no_applicable_policy"}[elig]
         return [dump(Claim(type=kind, case_id=case_id))]
 
     outcome = state.get("execute_outcome")
@@ -165,6 +167,8 @@ def allowed_claims(state: AgentState) -> list[dict]:
 
 # ======================================================================================= graph
 def build_graph(deps: AgentDeps, checkpointer: Any = None):
+    policy_index = deps.policy_index or KeywordPolicyIndex(deps.policies)
+
     def api(state: AgentState) -> CaseApiClient:
         return deps.case_api(state["tenant_id"], state["customer_id"])
 
@@ -241,7 +245,7 @@ def build_graph(deps: AgentDeps, checkpointer: Any = None):
                 open_cases = [c for c in cases if c["status"] == "OPEN"]
                 update.update(case=(open_cases or cases or [None])[0], no_case=not cases)
             elif tool == "search_policy":
-                p = search_policy(deps.policies, str(args.get("query", "")), state["region"], deps.today())
+                p = policy_index.search(str(args.get("query", "")), state["region"], deps.today())
                 update["policy"] = p.summary() if p else None
         except NotFound:
             update.update(not_found_order=str(args.get("order_id")), order=None, case=None)
@@ -257,6 +261,9 @@ def build_graph(deps: AgentDeps, checkpointer: Any = None):
         order, case, policy = state.get("order"), state.get("case"), state.get("policy")
         if not (order and case and policy):
             return {"eligibility": "missing_facts"}
+        if policy.get("kind") != ESCALATION_KIND:
+            # Retrieval found SOME policy, but not one that governs escalations: never decide with it.
+            return {"eligibility": "no_policy"}
         if case["status"] != "OPEN":
             return {"eligibility": "case_not_open"}
         days = business_days_late(date.fromisoformat(order["promisedDate"]), deps.today())
@@ -419,7 +426,7 @@ def build_graph(deps: AgentDeps, checkpointer: Any = None):
                 update.update(approval_check="rejected", eligibility="approval_rejected")
             else:
                 fresh_case = client.get_case(state["case"]["id"])
-                fresh = search_policy(deps.policies, "late delivery escalation", state["region"], deps.today())
+                fresh = policy_index.search("late delivery escalation", state["region"], deps.today())
                 expired = datetime.fromisoformat(a["expiresAt"]) < utcnow()
                 changed = [why for why, bad in (
                     ("the case changed", fresh_case["version"] != a["caseVersion"]),
@@ -490,7 +497,7 @@ def build_graph(deps: AgentDeps, checkpointer: Any = None):
                      ("create_approval", create_approval), ("announce_approval", announce_approval),
                      ("wait_for_approval", wait_for_approval), ("revalidate", revalidate),
                      ("compose_reply", compose_reply)]:
-        g.add_node(name, fn)
+        g.add_node(name, traced_node(name, fn))            # one span per node (no-op if tracing is off)
 
     g.add_edge(START, "guardrail")
     g.add_conditional_edges("guardrail", lambda s: "compose_reply" if s["blocked"] else "plan")

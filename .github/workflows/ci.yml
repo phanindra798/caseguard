@@ -11,7 +11,7 @@ jobs:
     # Real PostgreSQL 16 and real Kafka 4.3 (KRaft, single node).
     services:
       postgres:
-        image: postgres:16
+        image: pgvector/pgvector:0.8.7-pg16
         env:
           POSTGRES_USER: caseguard
           POSTGRES_PASSWORD: caseguard
@@ -46,7 +46,7 @@ jobs:
     # Real PostgreSQL 16 and real Kafka 4.3 (KRaft, single node).
     services:
       postgres:
-        image: postgres:16
+        image: pgvector/pgvector:0.8.7-pg16
         env:
           POSTGRES_USER: caseguard
           POSTGRES_PASSWORD: caseguard
@@ -82,7 +82,7 @@ jobs:
     # Real PostgreSQL 16 and real Kafka 4.3 (KRaft, single node).
     services:
       postgres:
-        image: postgres:16
+        image: pgvector/pgvector:0.8.7-pg16
         env:
           POSTGRES_USER: caseguard
           POSTGRES_PASSWORD: caseguard
@@ -120,13 +120,19 @@ jobs:
         with: { python-version: "3.12", cache: pip, cache-dependency-path: agent/pyproject.toml }
       - run: pip install -e ".[dev]"
       - run: python -m pytest -q
+      - name: Retrieval eval with a semantic embedding model (measurement, not a gate)
+        continue-on-error: true        # the model download may be unavailable; the numbers are informational
+        run: |
+          pip install -e ".[semantic]"
+          python -m caseguard_agent.retrieval_eval --embedder fastembed | tee retrieval-eval.md
+          { echo "## Policy retrieval eval"; cat retrieval-eval.md; } >> "$GITHUB_STEP_SUMMARY"
 
   agent-e2e:
     # The agent against the REAL Case API, Kafka and worker.
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16
+        image: pgvector/pgvector:0.8.7-pg16
         env:
           POSTGRES_USER: caseguard
           POSTGRES_PASSWORD: caseguard
@@ -155,17 +161,17 @@ jobs:
         env:
           PYTHON: python
         run: scripts/e2e-agent.sh
-      - name: Durable conversations (PostgreSQL checkpointer)
+      - name: Durable conversations and pgvector retrieval (real PostgreSQL)
         env:
           CASEGUARD_TEST_PG: postgresql://caseguard:caseguard@localhost:5432/caseguard_test
-        run: python -m pytest -q agent/tests/test_durable_checkpoints.py
+        run: python -m pytest -q agent/tests/test_durable_checkpoints.py agent/tests/test_retrieval.py
 
   harness:
     # The regression harness: every scenario file against the REAL stack, with fault injection.
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16
+        image: pgvector/pgvector:0.8.7-pg16
         env:
           POSTGRES_USER: caseguard
           POSTGRES_PASSWORD: caseguard
@@ -187,13 +193,15 @@ jobs:
       - uses: actions/setup-python@v6
         with: { python-version: "3.12", cache: pip, cache-dependency-path: "**/pyproject.toml" }
       - name: Install agent and harness
-        run: pip install -e agent -e "harness[dev]"
+        run: pip install -e "agent[tracing]" -e "harness[dev]"
       - name: Checker and fault-proxy unit tests
         run: python -m pytest -q harness/tests
       - name: Build jars
         run: scripts/ci-build-jars.sh
-      - name: Run all scenarios
-        run: python -m caseguard_harness --report harness-report.md
+      - name: Fetch the OpenTelemetry Java agent
+        run: scripts/fetch-otel-agent.sh
+      - name: Run all scenarios (with tracing, so S26 checks one trace across all services)
+        run: python -m caseguard_harness --tracing --report harness-report.md
       - name: Publish report
         if: always()
         run: '[ -f harness-report.md ] && cat harness-report.md >> "$GITHUB_STEP_SUMMARY" || true'
@@ -211,7 +219,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Start the stack
-        run: docker compose up -d --build --wait postgres kafka case-api agent
+        run: docker compose up -d --build --wait postgres kafka jaeger case-api agent
       - name: Start the worker
         run: docker compose up -d escalation-worker
       - name: End-to-end smoke test
@@ -249,3 +257,17 @@ jobs:
           grep -qi "escalat" step2.html
           curl -sf localhost:8090/conversations/ci-approval | tee step3.json
           python3 -c "import json;d=json.load(open('step3.json'));assert d['waiting_for_approval'] is None;assert len(d['messages'])==3"
+      - name: Jaeger received ONE trace spanning agent, Case API and worker
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf "localhost:16686/api/traces?service=caseguard-agent&limit=50" > traces.json && python3 - <<'PY' && exit 0
+          import json, sys
+          traces = json.load(open("traces.json"))["data"]
+          want = {"caseguard-agent", "case-api", "escalation-worker"}
+          best = max((({p["serviceName"] for p in t["processes"].values()}) for t in traces), key=len, default=set())
+          print("services in the most connected trace:", sorted(best))
+          sys.exit(0 if want <= best else 1)
+          PY
+            sleep 3
+          done
+          exit 1

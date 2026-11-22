@@ -20,6 +20,7 @@ ClaimType = Literal[
     "approval_requested",       # eligible, sent to a supervisor; waiting for the decision
     "approval_rejected",        # a supervisor said no
     "case_not_open",            # the case is closed
+    "no_applicable_policy",     # retrieval found no escalation policy for this customer
     "needs_more_info",          # we asked the customer a question
     "refused",                  # blocked by a guardrail, or not the customer's data
     "order_status",             # plain information answer

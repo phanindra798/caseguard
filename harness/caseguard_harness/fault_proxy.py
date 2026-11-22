@@ -11,13 +11,13 @@ Fault modes (each applies to the next `times` requests matching method + path re
 """
 from __future__ import annotations
 
+import http.client
 import re
 import threading
 import time
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-
-import httpx
+from urllib.parse import urlsplit
 
 
 @dataclass
@@ -53,19 +53,17 @@ class FaultProxy:
                     return
                 headers = {k: v for k, v in self.headers.items() if k.lower() not in ("host", "content-length")}
                 try:
-                    resp = httpx.request(self.command, proxy.upstream + self.path, headers=headers,
-                                         content=body, timeout=30)
-                except httpx.HTTPError:
+                    status, content, resp_headers = proxy._forward(self.command, self.path, headers, body)
+                except OSError:
                     # Upstream down (e.g. a scenario crashed the Case API): answer like a real gateway.
                     self._send(502, b'{"code":"bad_gateway"}', {"Content-Type": "application/json"})
                     return
                 if fault and fault.mode == "lose_response":
-                    proxy._note(fault, self.command, self.path, upstream_status=resp.status_code)
+                    proxy._note(fault, self.command, self.path, upstream_status=status)
                     time.sleep(fault.hold_s)      # the client gives up before this ends
                     return                        # close without answering
-                self._send(resp.status_code, resp.content,
-                           {k: v for k, v in resp.headers.items()
-                            if k.lower() in ("content-type", "location", "idempotent-replayed")})
+                self._send(status, content, {k: v for k, v in resp_headers.items()
+                                             if k.lower() in ("content-type", "location", "idempotent-replayed")})
 
             def _send(self, status, content, headers):
                 try:
@@ -83,6 +81,19 @@ class FaultProxy:
         self._server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
         self._server.daemon_threads = True
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+
+    def _forward(self, method: str, path: str, headers: dict, body: bytes):
+        """Forward with the stdlib http.client ON PURPOSE: it isn't instrumented by OpenTelemetry, so
+        the proxy is invisible to tracing and the agent's own traceparent header passes through
+        unchanged. (Forwarding with instrumented httpx started a new trace and overwrote it.)"""
+        u = urlsplit(self.upstream)
+        conn = http.client.HTTPConnection(u.hostname, u.port, timeout=30)
+        try:
+            conn.request(method, path, body=body or None, headers=headers)
+            resp = conn.getresponse()
+            return resp.status, resp.read(), dict(resp.getheaders())
+        finally:
+            conn.close()
 
     @property
     def url(self) -> str:

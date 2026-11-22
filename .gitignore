@@ -25,3 +25,4 @@ private/
 *.egg-info/
 harness-report.md
 harness-report.json
+tools/

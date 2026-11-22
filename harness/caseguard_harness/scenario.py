@@ -28,6 +28,7 @@ from caseguard_agent.runner import AgentRunner, Session
 
 from . import checks
 from .fault_proxy import Fault, FaultProxy
+from .trace_collector import TraceCollector
 from .stack import Stack
 
 SCENARIO_DIR = Path(__file__).resolve().parents[1] / "scenarios"
@@ -43,6 +44,7 @@ class ScenarioResult:
     id: str
     title: str
     passed: bool
+    skipped: str | None = None
     failures: list[str] = field(default_factory=list)
     caught: list[str] = field(default_factory=list)      # for expect_harness_failures scenarios
     turns: list[dict] = field(default_factory=list)
@@ -55,8 +57,8 @@ def load_scenarios(directory: Path = SCENARIO_DIR) -> list[dict]:
 
 
 class ScenarioRunner:
-    def __init__(self, stack: Stack, proxy: FaultProxy):
-        self.stack, self.proxy = stack, proxy
+    def __init__(self, stack: Stack, proxy: FaultProxy, collector: TraceCollector | None = None):
+        self.stack, self.proxy, self.collector = stack, proxy, collector
         self.policies = load_policies()
         self.agent: AgentRunner | None = None
         self._llm_mode = "scripted"
@@ -147,7 +149,12 @@ class ScenarioRunner:
     def run(self, sc: dict) -> ScenarioResult:
         started = time.time()
         result = ScenarioResult(id=sc["id"], title=sc["title"], passed=False)
+        if sc.get("requires") == "tracing" and self.collector is None:
+            result.passed, result.skipped = True, "tracing off (run scripts/fetch-otel-agent.sh, then --tracing)"
+            return result
         failures: list[str] = []
+        if self.collector is not None:
+            self.collector.clear()
         self.proxy.clear()
         self.stack.reset()
         if self.stack.worker is None or self.stack.worker.poll() is not None:
@@ -203,6 +210,16 @@ class ScenarioRunner:
                 failures += checks.check_events(final["events"], self._deliveries_by_key(), list(escalations))
             if "worker_log" in final:
                 failures += checks.check_logs(final["worker_log"], self.stack.worker_logs())
+            if "trace" in final:
+                from caseguard_agent.tracing import flush
+                deadline = time.time() + 20
+                while True:                                   # spans arrive in batches: give them a moment
+                    flush()
+                    errs = checks.check_trace(final["trace"], self.collector.traces())
+                    if not errs or time.time() > deadline:
+                        break
+                    time.sleep(1)
+                failures += errs
         except Exception as e:      # an exploding scenario is a failure, not a harness crash
             failures.append(f"HARNESS_ERROR: {type(e).__name__}: {e}")
 

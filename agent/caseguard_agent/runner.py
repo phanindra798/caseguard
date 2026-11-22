@@ -10,7 +10,9 @@ from dataclasses import dataclass
 
 from langgraph.types import Command
 
+from .llm.prompts import PROMPT_VERSION
 from .models import utcnow
+from .tracing import current_traceparent, tracer
 
 
 @dataclass(frozen=True)
@@ -66,7 +68,15 @@ class AgentRunner:
         config = self._config(conversation_id)
         before = self.graph.get_state(config).values or {}
         seen = {k: len(before.get(k, [])) for k in ("decisions", "tool_calls", "evidence")}
-        final = self.graph.invoke(graph_input, config)
+        with tracer.start_as_current_span("agent.turn") as span:
+            span.set_attribute("caseguard.conversation_id", conversation_id)
+            span.set_attribute("caseguard.prompt_version", PROMPT_VERSION)
+            span.set_attribute("caseguard.resume", not isinstance(graph_input, dict))
+            # Hand the turn's trace context to every node explicitly (see tracing.traced_node).
+            run_config = {"configurable": {**config["configurable"], "traceparent": current_traceparent()}}
+            final = self.graph.invoke(graph_input, run_config)
+            span.set_attribute("caseguard.claims", [c["type"] for c in final["reply"]["claims"]])
+            span.set_attribute("caseguard.trace_hint", "agent -> case-api -> kafka -> worker")
         return {
             "reply": final["reply"],
             "decisions": final.get("decisions", [])[seen["decisions"]:],

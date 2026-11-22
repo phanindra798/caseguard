@@ -43,6 +43,9 @@ _TEMPLATES = {
     "approval_rejected": lambda f: (
         f"A supervisor reviewed the escalation for order {f['order_id']} and decided not to approve it, "
         "so I haven't escalated it. Our support team can tell you more about the next steps."),
+    "no_applicable_policy": lambda f: (
+        f"I couldn't find the escalation policy that applies to order {f['order_id']}, so I can't decide on an "
+        "escalation automatically."),
     "case_not_open": lambda f: f"The support case for order {f['order_id']} is closed, so it can't be escalated.",
     "needs_more_info": lambda f: f["question"],
     "refused": lambda f: f.get("refusal") or "Sorry, I can't help with that request.",

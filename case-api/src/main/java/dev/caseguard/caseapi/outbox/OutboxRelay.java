@@ -1,6 +1,9 @@
 package dev.caseguard.caseapi.outbox;
 
 import dev.caseguard.caseapi.reliability.FailPoints;
+import dev.caseguard.caseapi.tracing.TraceContext;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.context.Scope;
 import java.nio.charset.StandardCharsets;
 import java.time.OffsetDateTime;
 import java.util.LinkedHashMap;
@@ -62,7 +65,8 @@ public class OutboxRelay {
     this.batchSize = batchSize;
   }
 
-  private record Row(UUID id, UUID aggregateId, String eventType, String payload, OffsetDateTime createdAt) {}
+  private record Row(UUID id, UUID aggregateId, String eventType, String payload, OffsetDateTime createdAt,
+                     String traceParent) {}
 
   /**
    * Publish one batch. Returns how many rows were published.
@@ -73,7 +77,7 @@ public class OutboxRelay {
   public int relayBatch() {
     Integer published = tx.execute(status -> {
       List<Row> rows = jdbc.query("""
-          select id, aggregate_id, event_type, payload::text, created_at
+          select id, aggregate_id, event_type, payload::text, created_at, trace_parent
             from outbox
            where published_at is null
            order by created_at
@@ -81,7 +85,7 @@ public class OutboxRelay {
              for update skip locked
           """,
           (rs, i) -> new Row(rs.getObject(1, UUID.class), rs.getObject(2, UUID.class), rs.getString(3),
-              rs.getString(4), rs.getObject(5, OffsetDateTime.class)),
+              rs.getString(4), rs.getObject(5, OffsetDateTime.class), rs.getString(6)),
           batchSize);
 
       for (Row row : rows) {
@@ -108,7 +112,9 @@ public class OutboxRelay {
     record.headers().add("event-id", row.id().toString().getBytes(StandardCharsets.UTF_8));
     record.headers().add("event-type", row.eventType().getBytes(StandardCharsets.UTF_8));
 
-    try {
+    // Continue the ORIGINAL request's trace (stored in the outbox row), not the relay's timer thread.
+    Span span = TraceContext.startContinuing(row.traceParent(), "outbox.publish " + row.eventType());
+    try (Scope ignored = span.makeCurrent()) {
       kafka.send(record).get(10, TimeUnit.SECONDS);   // WAIT for the broker's ack before marking
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
@@ -116,6 +122,8 @@ public class OutboxRelay {
     } catch (Exception e) {
       // Throwing rolls back the batch: nothing is marked published, everything is retried next tick.
       throw new IllegalStateException("publish failed for outbox row " + row.id(), e);
+    } finally {
+      span.end();
     }
     log.info("published event {} ({}) for {}", row.id(), row.eventType(), row.aggregateId());
   }

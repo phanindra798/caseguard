@@ -8,6 +8,7 @@ import dev.caseguard.caseapi.orders.OrderRepository;
 import dev.caseguard.caseapi.outbox.OutboxEvent;
 import dev.caseguard.caseapi.outbox.OutboxRepository;
 import dev.caseguard.caseapi.reliability.FailPoints;
+import dev.caseguard.caseapi.tracing.TraceContext;
 import dev.caseguard.caseapi.web.NotFoundException;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -104,7 +105,8 @@ public class EscalationService {
 
     failPoints.hit(FAIL_AFTER_ESCALATION_INSERT);   // tests prove a crash here leaves NOTHING behind
 
-    outbox.saveAndFlush(OutboxEvent.of(e.getTenantId(), e.getId(), EVENT_TYPE, payloadFor(e)));
+    outbox.saveAndFlush(OutboxEvent.of(e.getTenantId(), e.getId(), EVENT_TYPE, payloadFor(e),
+        TraceContext.currentTraceParent()));
     return EscalationResult.created(e);
   }
 

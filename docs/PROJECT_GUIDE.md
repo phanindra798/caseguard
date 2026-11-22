@@ -1528,6 +1528,20 @@ Model names are **placeholders until we verify what's available and affordable**
 | Durable state | `PostgresSaver` with a connection pool, selected by `CASEGUARD_CHECKPOINT_DB` | A paused conversation survives restarts and deployments |
 | Supervisor page | Plain server-rendered HTML forms in the agent app | One page, two buttons; no JavaScript framework needed |
 
+### Implementation notes from Phase 2.2
+
+| Topic | What was built | Why |
+|---|---|---|
+| Fresh facts | At each turn the agent keeps only `focus_order_id` and re-reads order, case and policy | A support correction between turns must not be missed; customer statements are never facts |
+| Untrusted data | Orders carry a `customer_note`; it reaches the model as `untrusted_customer_note`, and a scanner flags instruction-like text | Indirect prompt injection arrives through data, not only through the chat |
+| Gullible test double | `GullibleLLM` obeys instructions found in data | Proves the SYSTEM holds when the model is fooled |
+| Output guard | Replies with unproven claims, wrong subjects or "done" wording are replaced by a verified template reply | The harness catches this in tests; the guard protects customers in production. S07 runs with the guard off so the harness itself stays tested |
+| Retrieval | Keyword, in-memory vector, hybrid (RRF) and pgvector indexes behind one interface; an eval set of 24 labelled queries | Measured: keyword 21/24, hybrid 18/24, hashing vectors 16/24, so keyword is the default. A semantic model is measured in CI |
+| Policy kind | Only `late_delivery_escalation` policies may drive eligibility | A retrieval mistake must never turn a returns policy into an escalation decision |
+| Tracing | OpenTelemetry in all services; the outbox row stores the W3C traceparent | The relay publishes from a timer thread, so without the stored context the trace would break at Kafka |
+| LangGraph + tracing | The runner passes the turn's traceparent in `config["configurable"]`; node spans continue from it | LangGraph doesn't carry Python's tracing context into node execution |
+| Harness tracing | A minimal OTLP collector (handles chunked and gzip bodies); S26 asserts one trace across all services | Tracing is tested, not just looked at. Two harness bugs were found on the way: dropped chunked batches, and the fault proxy overwriting the agent's traceparent |
+
 ### Second review: code corrections
 
 | Review point | Bug in the old code | Fix | Where |

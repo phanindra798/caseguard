@@ -119,3 +119,25 @@ def check_events(spec: dict, deliveries_by_key: dict[str, int], escalation_ids: 
 
 def check_logs(spec: dict, worker_log: str) -> list[str]:
     return [f"LOG_MISSING: worker log should contain '{p}'" for p in spec.get("contains", []) if p not in worker_log]
+
+
+def check_trace(spec: dict, traces: dict[str, list[dict]]) -> list[str]:
+    """One trace must contain spans from every listed service AND every listed span name."""
+    want_services = set(spec.get("services", []))
+    want_names = spec.get("span_names", [])
+
+    def missing(spans):
+        services = {s["service"] for s in spans}
+        names = {s["name"] for s in spans}
+        return (sorted(want_services - services), [w for w in want_names if not any(w in n for n in names)])
+
+    if not traces:
+        return ["TRACE_BROKEN: no spans were received at all"]
+    for spans in traces.values():
+        if missing(spans) == ([], []):
+            return []
+    # Report the closest trace, so the failure says exactly what is missing.
+    best_id, best = min(traces.items(), key=lambda kv: (len(missing(kv[1])[0]), len(missing(kv[1])[1])))
+    svc, names = missing(best)
+    return [f"TRACE_BROKEN: closest trace {best_id[:8]} ({len(best)} spans) is missing services {svc} "
+            f"and spans {names}; it has: {sorted({s['service'] + ':' + s['name'] for s in best})[:12]}"]

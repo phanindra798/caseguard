@@ -1,7 +1,7 @@
 # Local stack. Grows phase by phase (agent, Jaeger, Toxiproxy come later).
 services:
   postgres:
-    image: postgres:16
+    image: pgvector/pgvector:0.8.7-pg16      # PostgreSQL 16 + the pgvector extension
     environment:
       POSTGRES_USER: caseguard
       POSTGRES_PASSWORD: caseguard
@@ -48,6 +48,13 @@ services:
     environment:
       DB_URL: jdbc:postgresql://postgres:5432/caseguard
       KAFKA_BOOTSTRAP: kafka:19092
+      # Tracing: the OpenTelemetry Java agent sends spans to Jaeger.
+      JAVA_TOOL_OPTIONS: -javaagent:/app/opentelemetry-javaagent.jar
+      OTEL_SERVICE_NAME: case-api
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      OTEL_METRICS_EXPORTER: none
+      OTEL_LOGS_EXPORTER: none
+      OTEL_INSTRUMENTATION_SPRING_SCHEDULING_ENABLED: "false"
     ports:
       - "8081:8081"
     depends_on:
@@ -59,6 +66,13 @@ services:
     environment:
       DB_URL: jdbc:postgresql://postgres:5432/caseguard
       KAFKA_BOOTSTRAP: kafka:19092
+      # Tracing: the OpenTelemetry Java agent sends spans to Jaeger.
+      JAVA_TOOL_OPTIONS: -javaagent:/app/opentelemetry-javaagent.jar
+      OTEL_SERVICE_NAME: escalation-worker
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      OTEL_METRICS_EXPORTER: none
+      OTEL_LOGS_EXPORTER: none
+      OTEL_INSTRUMENTATION_SPRING_SCHEDULING_ENABLED: "false"
     depends_on:
       case-api: { condition: service_started }   # the Case API runs the DB migrations
       kafka: { condition: service_healthy }
@@ -72,8 +86,16 @@ services:
       CASEGUARD_LLM: scripted          # set to "live" + CASEGUARD_MODEL to use a real model
       # Conversations live in PostgreSQL, so one paused for approval survives an agent restart.
       CASEGUARD_CHECKPOINT_DB: postgresql://caseguard:caseguard@postgres:5432/caseguard
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
     ports:
       - "8090:8090"
     depends_on:
       postgres: { condition: service_healthy }
       case-api: { condition: service_started }
+
+  # Trace viewer: http://localhost:16686 (search service "caseguard-agent").
+  jaeger:
+    image: jaegertracing/jaeger:2.22.0
+    ports:
+      - "16686:16686"     # UI and query API
+      - "4318:4318"       # OTLP over HTTP (what the services send to)

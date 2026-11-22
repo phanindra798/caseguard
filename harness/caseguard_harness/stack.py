@@ -19,6 +19,7 @@ import psycopg
 ROOT = Path(__file__).resolve().parents[2]
 API_JAR = ROOT / "case-api/target/case-api-0.1.0-SNAPSHOT.jar"
 WORKER_JAR = ROOT / "escalation-worker/target/escalation-worker-0.1.0-SNAPSHOT.jar"
+OTEL_AGENT = ROOT / "tools/opentelemetry-javaagent.jar"     # scripts/fetch-otel-agent.sh
 
 
 @dataclass
@@ -50,8 +51,10 @@ class StackConfig:
 
 
 class Stack:
-    def __init__(self, config: StackConfig | None = None, log_dir: Path | None = None):
+    def __init__(self, config: StackConfig | None = None, log_dir: Path | None = None,
+                 otlp_endpoint: str | None = None):
         self.cfg = config or StackConfig()
+        self.otlp_endpoint = otlp_endpoint          # set → both JVMs run with the OpenTelemetry agent
         self.log_dir = log_dir or Path(os.getenv("TMPDIR", "/tmp")) / f"caseguard-harness-{self.cfg.run_id}"
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.api: subprocess.Popen | None = None
@@ -92,16 +95,26 @@ class Stack:
                    DB_PASSWORD=self.cfg.pg_password, KAFKA_BOOTSTRAP=self.cfg.kafka,
                    CASEGUARD_TOPICS_ESCALATION_REQUESTED=self.cfg.topic)
         env.pop("FAIL_POINT", None)
+        if self.otlp_endpoint:
+            env.update(OTEL_EXPORTER_OTLP_ENDPOINT=self.otlp_endpoint, OTEL_EXPORTER_OTLP_PROTOCOL="http/protobuf",
+                       OTEL_METRICS_EXPORTER="none", OTEL_LOGS_EXPORTER="none", OTEL_BSP_SCHEDULE_DELAY="200",
+                       # the relay's 200 ms timer would otherwise start a tiny, useless trace on every tick
+                       OTEL_INSTRUMENTATION_SPRING_SCHEDULING_ENABLED="false")
         if fail_point:
             env["FAIL_POINT"] = fail_point
         return env
+
+    def _java(self, jar: Path, service: str) -> list[str]:
+        if self.otlp_endpoint:
+            return ["java", f"-javaagent:{OTEL_AGENT}", f"-Dotel.service.name={service}", "-jar", str(jar)]
+        return ["java", "-jar", str(jar)]
 
     def start_api(self, fail_point: str | None = None) -> None:
         self.stop_api()
         self._api_starts += 1
         log = open(self.log_dir / f"case-api-{self._api_starts}.log", "w")
         env = self._env(fail_point) | {"PORT": str(self.cfg.api_port)}
-        self.api = subprocess.Popen(["java", "-jar", str(API_JAR)], env=env, stdout=log, stderr=subprocess.STDOUT)
+        self.api = subprocess.Popen(self._java(API_JAR, "case-api"), env=env, stdout=log, stderr=subprocess.STDOUT)
         deadline = time.time() + 90
         while time.time() < deadline:
             if self.api.poll() is not None:
@@ -127,7 +140,8 @@ class Stack:
         self._worker_starts += 1
         log = open(self.log_dir / f"worker-{self._worker_starts}.log", "w")
         env = self._env(fail_point) | {"SPRING_KAFKA_CONSUMER_GROUP_ID": f"worker-harness-{self.cfg.run_id}"}
-        self.worker = subprocess.Popen(["java", "-jar", str(WORKER_JAR)], env=env, stdout=log, stderr=subprocess.STDOUT)
+        self.worker = subprocess.Popen(self._java(WORKER_JAR, "escalation-worker"), env=env, stdout=log,
+                                       stderr=subprocess.STDOUT)
         # Ready = partitions assigned (Spring Kafka logs it), so no event is published before we listen.
         deadline = time.time() + 90
         while time.time() < deadline:

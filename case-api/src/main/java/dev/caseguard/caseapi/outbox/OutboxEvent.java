@@ -44,17 +44,23 @@ public class OutboxEvent {
   @Column(name = "published_at")
   private OffsetDateTime publishedAt;
 
+  /** W3C traceparent of the request that created this event, so the trace continues through Kafka. */
+  @Column(name = "trace_parent")
+  private String traceParent;
+
   protected OutboxEvent() {
     // required by JPA
   }
 
-  public static OutboxEvent of(String tenantId, UUID aggregateId, String eventType, String payloadJson) {
+  public static OutboxEvent of(String tenantId, UUID aggregateId, String eventType, String payloadJson,
+                               String traceParent) {
     OutboxEvent o = new OutboxEvent();
     o.tenantId = tenantId;
     o.aggregateId = aggregateId;
     o.eventType = eventType;
     o.payload = payloadJson;
     o.createdAt = OffsetDateTime.now();
+    o.traceParent = traceParent;
     return o;
   }
 
@@ -65,4 +71,5 @@ public class OutboxEvent {
   public String getPayload() { return payload; }
   public OffsetDateTime getCreatedAt() { return createdAt; }
   public OffsetDateTime getPublishedAt() { return publishedAt; }
+  public String getTraceParent() { return traceParent; }
 }

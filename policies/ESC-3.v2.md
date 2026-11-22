@@ -2,6 +2,7 @@
 id: ESC-3
 version: 2
 title: Late delivery escalation (US)
+kind: late_delivery_escalation
 region: US
 effective_from: 2026-07-01
 effective_to: null

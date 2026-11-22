@@ -58,6 +58,11 @@
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-kafka</artifactId>
     </dependency>
+    <!-- OpenTelemetry API only (no SDK): real spans when the OTel Java agent is attached, no-op otherwise -->
+    <dependency>
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-api</artifactId>
+    </dependency>
     <!-- /actuator/health for Docker Compose and CI health checks -->
     <dependency>
       <groupId>org.springframework.boot</groupId>

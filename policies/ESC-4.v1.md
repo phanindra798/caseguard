@@ -2,6 +2,7 @@
 id: ESC-4
 version: 1
 title: Late delivery escalation (EU)
+kind: late_delivery_escalation
 region: EU
 effective_from: 2026-01-01
 effective_to: null

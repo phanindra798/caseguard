@@ -1,0 +1,14 @@
+id: S26
+title: One trace follows the request from the agent through the Case API and Kafka to the worker
+requires: tracing
+turns:
+  - say: "Order 1042 is late, please escalate it."
+    expect:
+      claims: {one_of: [[escalation_completed], [escalation_pending]]}
+recovery:
+  wait_until: "select count(*) = 1 from follow_up_tasks"
+  timeout: 30
+final:
+  trace:
+    services: [caseguard-agent, case-api, escalation-worker]
+    span_names: ["agent.turn", "agent.node.execute", "outbox.publish EscalationRequested"]

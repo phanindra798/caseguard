@@ -122,12 +122,17 @@ parcel?") across 7 policies, 2 regions and 2 dates. Results (`make retrieval-eva
 | Index | accuracy@1 |
 |---|---|
 | **keyword (default)** | **21/24 (88%)** |
-| hybrid keyword + hashing vectors (reciprocal rank fusion) | 18/24 (75%) |
+| hybrid keyword + semantic model (bge-small via fastembed, reciprocal rank fusion) | 21/24 (88%) |
+| semantic model alone (bge-small) | 19/24 (79%) |
+| hybrid keyword + hashing vectors | 18/24 (75%) |
 | hashing vectors, in memory or in **pgvector** (identical answers) | 16/24 (67%) |
 
-The offline hashing embedder is lexical, not semantic, so it **lost** to plain keywords, and keyword stays the
-default. Vector search (in memory or in pgvector, with region and date filtered in SQL before ranking) is ready
-for a real semantic model: CI measures `fastembed` (bge-small) on the same queries. Whatever the ranking does, the
+The offline hashing embedder is lexical, not semantic, and lost to plain keywords. A real semantic model alone
+also scored below keywords here, and only tied them in a hybrid. So **keyword stays the default**: just as
+accurate on this set, simpler, and no model download. With only 24 queries a 2-query gap isn't statistically
+meaningful; choosing a semantic model would need a larger eval set. CI re-measures the semantic model on every
+push (job summary). Vector search (in memory, or in pgvector with region and date filtered in SQL before
+ranking) is one setting away. Whatever the ranking does, the
 region and date filters always hold (tested), and code refuses to decide eligibility with a non-escalation policy.
 
 ## Tracing

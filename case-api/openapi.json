@@ -825,6 +825,9 @@
           "deliveredAt" : {
             "type" : "string",
             "format" : "date-time"
+          },
+          "customerNote" : {
+            "type" : "string"
           }
         }
       },

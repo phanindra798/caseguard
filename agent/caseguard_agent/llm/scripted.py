@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 
 from ..models import Claim, PlanStep, ReplyDraft
+from ..replies import render_reply
 
 _ORDER_ID = re.compile(r"\b(\d{4})\b")
 _WANTS_ESCALATION = re.compile(r"escalat|late|delay|not (?:arrived|here)|still waiting|hasn.t arrived", re.I)
@@ -35,7 +36,12 @@ class ScriptedLLM:
         if view.get("not_found_order") and order is None:
             return PlanStep(action="answer", reason="that order is not on this customer's account")
 
-        # 2. No order yet → find out which one they mean.
+        # 2. No order loaded this turn, but the conversation is about one → re-read it.
+        if order is None and not named and view.get("focus_order_id"):
+            return PlanStep(action="call_tool", tool="get_order", args={"order_id": view["focus_order_id"]},
+                            reason=f"re-checking order {view['focus_order_id']} in the system; facts may have changed")
+
+        # 3. No order yet → find out which one they mean.
         if order is None:
             if orders is None:
                 return PlanStep(action="call_tool", tool="list_orders", args={},
@@ -51,7 +57,7 @@ class ScriptedLLM:
                                 reason=f"{len(late)} late orders and the customer didn't say which")
             return PlanStep(action="answer", reason="no late orders on the account")
 
-        # 3. Gather the remaining facts, one tool at a time.
+        # 4. Gather the remaining facts, one tool at a time.
         if view.get("read_error"):
             return PlanStep(action="answer", reason=f"could not read data ({view['read_error']} failed)")
         if view.get("case") is None and view.get("no_case"):
@@ -63,7 +69,7 @@ class ScriptedLLM:
             return PlanStep(action="call_tool", tool="search_policy", args={"query": "late delivery escalation"},
                             reason="need the escalation policy that applies to this customer")
 
-        # 4. Enough facts. Propose (code decides whether it's allowed).
+        # 5. Enough facts. Propose (code decides whether it's allowed).
         if wants_escalation:
             return PlanStep(action="propose_escalation",
                             reason="order, case and policy are known and the customer asked for an escalation")
@@ -80,45 +86,4 @@ class ScriptedLLM:
                 claims=[Claim(type="escalation_completed", escalation_id=f["escalation_id"], case_id=f.get("case_id"))],
                 policy_cited=f.get("policy_ref"))
 
-        claim = allowed[0] if allowed else None
-        kind = claim.type if claim else "order_status"
-        text = _TEMPLATES[kind](f)
-        return ReplyDraft(text=text, claims=allowed, policy_cited=f.get("policy_ref") if kind in _CITES else None)
-
-
-_CITES = {"escalation_completed", "escalation_pending", "escalation_declined", "approval_requested"}
-
-_TEMPLATES = {
-    "escalation_completed": lambda f: (
-        f"I've escalated order {f['order_id']} to our tier-2 support team and a specialist task has been created "
-        f"(reference {f['escalation_id']}). It is {f['days_late']} business days late, which qualifies under "
-        f"policy {f['policy_ref']}."),
-    "escalation_pending": lambda f: (
-        f"I've submitted an escalation for order {f['order_id']} (reference {f['escalation_id']}). "
-        "It's being processed now, and the support team will contact you once they pick it up."),
-    "escalation_already_open": lambda f: (
-        f"Order {f['order_id']} already has an open escalation (reference {f['escalation_id']}), "
-        "so I haven't opened a second one."),
-    "escalation_unconfirmed": lambda f: (
-        f"I tried to escalate order {f['order_id']}, but I couldn't confirm whether it went through. "
-        f"Your request reference is {f['operation_id']}; our team will check it, so there's no need to submit it again."),
-    "escalation_not_submitted": lambda f: (
-        f"I wasn't able to submit the escalation for order {f['order_id']} because our system is unavailable "
-        "right now. Nothing was created; please try again in a few minutes."),
-    "escalation_declined": lambda f: (
-        f"Order {f['order_id']} is {f['days_late']} business day(s) late. Under policy {f['policy_ref']} an escalation "
-        f"is possible after more than {f['policy_min_days']} business days, so I can't escalate it yet."),
-    "approval_requested": lambda f: (
-        f"Order {f['order_id']} qualifies for escalation, but because it's over $500, policy {f['policy_ref']} "
-        f"requires a supervisor's approval first. I've sent the request (reference {f['approval_id']}) and "
-        "I'll continue as soon as a supervisor decides."),
-    "approval_rejected": lambda f: (
-        f"A supervisor reviewed the escalation for order {f['order_id']} and decided not to approve it, "
-        "so I haven't escalated it. Our support team can tell you more about the next steps."),
-    "case_not_open": lambda f: f"The support case for order {f['order_id']} is closed, so it can't be escalated.",
-    "needs_more_info": lambda f: f["question"],
-    "refused": lambda f: f.get("refusal") or "Sorry, I can't help with that request.",
-    "order_status": lambda f: (
-        f"Order {f['order_id']} ({f['order_description']}) is {f['order_status']}; it was promised for {f['promised_date']}."
-        if f.get("order_id") else "I couldn't find a delayed order on your account."),
-}
+        return render_reply(allowed, f)

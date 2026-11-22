@@ -22,6 +22,7 @@ from caseguard_agent.case_api import CaseApiClient, SupervisorClient
 from caseguard_agent.checkpoints import make_checkpointer
 from caseguard_agent.graph import AgentDeps, build_graph
 from caseguard_agent.llm import ScriptedLLM
+from caseguard_agent.llm.doubles import GullibleLLM
 from caseguard_agent.policies import load_policies
 from caseguard_agent.runner import AgentRunner, Session
 
@@ -62,19 +63,21 @@ class ScenarioRunner:
         self._checkpointer = None
 
     # ------------------------------------------------------------------ agent
-    def _agent(self, llm_mode: str) -> AgentRunner:
+    def _agent(self, llm_mode: str, output_guard: bool = True) -> AgentRunner:
         """A fresh agent PROCESS: new graph, new connection pool, conversations only in PostgreSQL."""
         if self._checkpointer is not None:
             self._checkpointer.conn.close()
         self._checkpointer = make_checkpointer(self.stack.cfg.checkpoint_url)
-        self._llm_mode = llm_mode
-        llm = ScriptedLLM(overclaim=(llm_mode == "overclaim"))
+        self._llm_mode, self._output_guard = llm_mode, output_guard
+        llm = {"scripted": lambda: ScriptedLLM(), "overclaim": lambda: ScriptedLLM(overclaim=True),
+               "gullible": lambda: GullibleLLM()}[llm_mode]()
         deps = AgentDeps(
             llm=llm,
             case_api=lambda t, c: CaseApiClient(self.proxy.url, t, c, timeout_s=CLIENT_TIMEOUT_S),
             policies=self.policies,
             retry_delays=(0.2, 0.4),
-            poll_delays=(0.5, 1, 1.5, 2, 3))
+            poll_delays=(0.5, 1, 1.5, 2, 3),
+            output_guard=output_guard)
         return AgentRunner(build_graph(deps, checkpointer=self._checkpointer))
 
     # ------------------------------------------------------------------ actions
@@ -93,7 +96,7 @@ class ScenarioRunner:
             code = self.stack.wait_api_exit(timeout=60)
             assert code != 0, "case-api was expected to crash"
         elif name == "restart_agent":
-            self.agent = self._agent(self._llm_mode)          # the old agent object is simply dropped
+            self.agent = self._agent(self._llm_mode, self._output_guard)   # the old agent is simply dropped
         elif name == "sql":
             self.stack.execute(arg)
         elif name == "fault":
@@ -152,7 +155,7 @@ class ScenarioRunner:
         try:
             for a in sc.get("setup", []):
                 self._act(a)
-            self.agent = self._agent(sc.get("llm", "scripted"))
+            self.agent = self._agent(sc.get("llm", "scripted"), sc.get("output_guard", True))
             session = SESSIONS[sc.get("session", "asha")]
             conversation = str(uuid.uuid4())
 

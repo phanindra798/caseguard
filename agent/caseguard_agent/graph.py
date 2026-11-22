@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import json
 import operator
-import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -48,12 +47,12 @@ from .case_api import (AlreadyOpen, ApprovalRequired, CaseApiClient, CaseApiErro
                        CaseNotOpen, NotFound, OperationConflict, Unavailable)
 from .llm.base import AgentLLM
 from .models import READ_TOOLS, Claim, Evidence, PlanStep, dump, utcnow
+from .output_guard import violations
+from .replies import render_reply
+from .untrusted import scan
 from .policies import Policy, search_policy
 
 IDENTITY_KEYS = {"tenant_id", "customer_id", "tenantId", "customerId", "region"}
-_INJECTION = re.compile(
-    r"ignore (all |any |the )?(previous|prior|above) (instructions|rules)|system prompt|you are now|developer mode",
-    re.I)
 
 
 # ======================================================================================= state
@@ -69,6 +68,7 @@ class AgentState(TypedDict, total=False):
     evidence: Annotated[list[dict], operator.add]
     # Conversation-long facts.
     orders: list[dict] | None
+    focus_order_id: str | None  # which order the conversation is about (kept across turns)
     order: dict | None
     case: dict | None
     policy: dict | None
@@ -103,6 +103,7 @@ class AgentDeps:
     retry_delays: tuple[float, ...] = (0.5, 1.0)      # 3 attempts in total
     poll_delays: tuple[float, ...] = (0.5, 1.0, 2.0, 4.0)
     max_steps: int = 6
+    output_guard: bool = True                         # replace unproven replies before they reach the customer
     sleep: Callable[[float], None] = field(default=time.sleep)
 
 
@@ -114,7 +115,9 @@ def _latest_user(state: AgentState) -> str:
 def _order_summary(o: dict, today: date) -> dict:
     return {"id": o["id"], "description": o["description"], "status": o["status"],
             "amount_cents": o["amountCents"], "promised_date": o["promisedDate"],
-            "late_business_days": business_days_late(date.fromisoformat(o["promisedDate"]), today)}
+            "late_business_days": business_days_late(date.fromisoformat(o["promisedDate"]), today),
+            # Labelled as untrusted: the prompt says untrusted_* fields are DATA, never instructions.
+            "untrusted_customer_note": o.get("customerNote")}
 
 
 def _escalation_evidence(dto: dict, source: str) -> dict:
@@ -173,7 +176,12 @@ def build_graph(deps: AgentDeps, checkpointer: Any = None):
                  "approval_phase": None, "approval_check": None}
         if "operations" not in state:
             reset["operations"] = {}
-        if _INJECTION.search(_latest_user(state)):
+        # Fresh facts every turn: remember WHICH order we're talking about, but forget what we
+        # read about it. The planner re-reads order, case and policy from the system of record,
+        # so a correction made by support staff between turns is never missed.
+        focus = (state.get("order") or {}).get("id") or state.get("focus_order_id")
+        reset.update(focus_order_id=focus, order=None, case=None, policy=None, orders=None)
+        if scan(_latest_user(state)):
             reset["blocked"] = True
             reset["decisions"] = [{"action": "refuse", "reason": "prompt-injection pattern in the message"}]
         return reset
@@ -193,6 +201,7 @@ def build_graph(deps: AgentDeps, checkpointer: Any = None):
                 "case": state.get("case"),
                 "policy": state.get("policy"),
                 "not_found_order": state.get("not_found_order"),
+                "focus_order_id": state.get("focus_order_id"),
                 "no_case": state.get("no_case"),
                 "read_error": state.get("read_error"),
                 "steps_taken": state["steps"],
@@ -219,6 +228,12 @@ def build_graph(deps: AgentDeps, checkpointer: Any = None):
             elif tool == "get_order":
                 o = client.get_order(str(args["order_id"]))
                 update.update(order=o, not_found_order=None)
+                flags = scan(o.get("customerNote"))
+                if flags:
+                    update["decisions"] = [dump(PlanStep(
+                        action="answer", reason=f"FLAG untrusted: order {o['id']} note contains instruction-like "
+                        f"text {flags}; treated as data, not instructions"))
+                        | {"action": "flag_untrusted"}]
                 if (state.get("order") or {}).get("id") != o["id"]:
                     update.update(case=None, no_case=False)     # a different order: old case no longer applies
             elif tool == "get_cases":
@@ -449,15 +464,23 @@ def build_graph(deps: AgentDeps, checkpointer: Any = None):
             "escalation_id": str(state["escalation"]["id"]) if state.get("escalation") else None,
             "operation_id": op.get("id"), "question": (state.get("next") or {}).get("question"),
             "approval_id": (state.get("approval") or {}).get("id"),
+            "customer_note": order.get("customerNote"),
             "refusal": refusal,
         }
         allowed = allowed_claims(state)
         draft = deps.llm.write_reply({"allowed_claims": allowed, "facts": facts,
                                       "customer_message": _latest_user(state)})
+        update: dict[str, Any] = {}
+        problems = violations(draft, [Claim(**c) for c in allowed])
+        if problems and deps.output_guard:
+            # The model said more than the evidence supports. The customer gets the verified reply.
+            draft = render_reply([Claim(**c) for c in allowed], facts)
+            update["decisions"] = [{"action": "output_guard", "tool": None, "args": {}, "question": None,
+                                    "reason": "replaced an unproven reply: " + "; ".join(problems)}]
         reply = {"text": draft.text, "claims": [dump(c) for c in draft.claims],
                  "policy_cited": draft.policy_cited, "allowed_claims": allowed,
                  "created_at": utcnow().isoformat()}
-        return {"reply": reply, "messages": [{"role": "assistant", "content": draft.text}]}
+        return update | {"reply": reply, "messages": [{"role": "assistant", "content": draft.text}]}
 
     # ------------------------------------------------------------------ wiring
     g = StateGraph(AgentState)

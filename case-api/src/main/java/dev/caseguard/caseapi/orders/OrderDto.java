@@ -15,10 +15,11 @@ public record OrderDto(
     long amountCents,
     String status,
     LocalDate promisedDate,
-    OffsetDateTime deliveredAt) {
+    OffsetDateTime deliveredAt,
+    String customerNote) {
 
   static OrderDto from(CustomerOrder o) {
     return new OrderDto(o.getId(), o.getCustomerId(), o.getDescription(), o.getAmountCents(),
-        o.getStatus(), o.getPromisedDate(), o.getDeliveredAt());
+        o.getStatus(), o.getPromisedDate(), o.getDeliveredAt(), o.getCustomerNote());
   }
 }

@@ -68,6 +68,10 @@ class Stack:
             conn.execute(f"drop database if exists {self.cfg.database}")
             conn.execute(f"create database {self.cfg.database}")
         self.start_api()          # runs the Flyway migrations + seed data
+        with psycopg.connect(self.cfg.dsn(), autocommit=True) as conn:
+            # Snapshot the seed data, so scenarios may edit orders/cases and reset() puts them back.
+            conn.execute("create table harness_orders_seed as select * from orders")
+            conn.execute("create table harness_cases_seed as select * from cases")
         self.start_worker()
 
     def stop(self) -> None:
@@ -173,4 +177,7 @@ class Stack:
                              and exists (select 1 from outbox o where o.aggregate_id = e.id)""", timeout=5)
         with psycopg.connect(self.cfg.dsn(), autocommit=True) as conn:
             conn.execute("truncate follow_up_tasks, processed_events, outbox, escalations, approvals")
-            conn.execute("update cases set status = 'OPEN', version = 0")
+            conn.execute("""update orders o set promised_date = s.promised_date, status = s.status,
+                                customer_note = s.customer_note from harness_orders_seed s where o.id = s.id""")
+            conn.execute("""update cases c set status = s.status, subject = s.subject, version = s.version
+                              from harness_cases_seed s where c.id = s.id""")

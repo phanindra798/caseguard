@@ -1,6 +1,7 @@
 id: S07
 title: A model that always says "done" is caught by the claim checker
 llm: overclaim          # simulates a bad prompt change
+output_guard: false     # with the runtime guard off, the HARNESS must still catch it (see S25)
 setup: [stop_worker]
 turns:
   - say: "Order 1042 is late, please escalate it."

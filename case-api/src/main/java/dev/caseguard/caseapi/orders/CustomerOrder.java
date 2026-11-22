@@ -41,6 +41,10 @@ public class CustomerOrder {
   @Column(name = "delivered_at")
   private OffsetDateTime deliveredAt;
 
+  /** Free text from the customer. UNTRUSTED: may contain anything, including fake "instructions". */
+  @Column(name = "customer_note")
+  private String customerNote;
+
   protected CustomerOrder() {
     // required by JPA
   }
@@ -53,4 +57,5 @@ public class CustomerOrder {
   public String getStatus() { return status; }
   public LocalDate getPromisedDate() { return promisedDate; }
   public OffsetDateTime getDeliveredAt() { return deliveredAt; }
+  public String getCustomerNote() { return customerNote; }
 }

@@ -25,13 +25,14 @@ def api(today) -> FakeCaseApi:
     return FakeCaseApi(today)
 
 
-def make_agent(api: FakeCaseApi, today: date, llm=None) -> AgentRunner:
+def make_agent(api: FakeCaseApi, today: date, llm=None, output_guard: bool = True) -> AgentRunner:
     deps = AgentDeps(
         llm=llm or ScriptedLLM(),
         case_api=lambda t, c: CaseApiClient("http://case-api", t, c, transport=api.transport()),
         policies=load_policies(),
         today=lambda: today,
-        retry_delays=(0, 0), poll_delays=(0, 0, 0, 0), sleep=lambda s: None)   # no real waiting in tests
+        retry_delays=(0, 0), poll_delays=(0, 0, 0, 0), sleep=lambda s: None,   # no real waiting in tests
+        output_guard=output_guard)
     return AgentRunner(build_graph(deps))
 
 

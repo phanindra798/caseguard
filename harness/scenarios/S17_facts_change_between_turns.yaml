@@ -1,0 +1,16 @@
+id: S17
+title: Support corrects the order between turns, the agent re-reads it instead of using memory
+turns:
+  - say: "Order 1043 is late, please escalate it."
+    expect:
+      claims: {one_of: [[escalation_declined]]}
+  - say: "Could you check again please?"
+    before:
+      - sql: "update orders set promised_date = current_date - 12 where id = '1043'"
+    expect:
+      decisions: {includes: [propose_escalation]}
+      tools: {in_order: [get_order, get_cases, request_escalation]}
+      claims: {one_of: [[escalation_completed], [escalation_pending]], case_id: C-1043}
+final:
+  db:
+    - {sql: "select count(*) from escalations where case_id = 'C-1043'", equals: 1}

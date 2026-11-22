@@ -221,10 +221,10 @@ def test_step_budget_always_ends_the_loop(api, today):
     assert len(r["decisions"]) == 7 and r["decisions"][-1]["reason"] == "step budget reached"
 
 
-# ------------------------------------------------------------------------------------- S07 (preview)
-def test_s07_overclaiming_model_is_caught_by_the_evidence_check(api, today):
+# ------------------------------------------------------------------------------------- S07 / S25
+def test_s07_with_the_guard_off_the_evidence_check_catches_an_overclaiming_model(api, today):
     api.worker = "down"
-    agent = make_agent(api, today, ScriptedLLM(overclaim=True))
+    agent = make_agent(api, today, ScriptedLLM(overclaim=True), output_guard=False)
     _, r = turn(agent, "Order 1042 is late, please escalate it.")
     assert claim_types(r) == ["escalation_completed"]                 # the model lied...
     assert r["reply"]["allowed_claims"][0]["type"] == "escalation_pending"
@@ -233,3 +233,42 @@ def test_s07_overclaiming_model_is_caught_by_the_evidence_check(api, today):
         raise AssertionError("the evidence check should have failed")
     except AssertionError as e:
         assert "unsupported claim" in str(e)                          # ...and the check caught it
+
+
+def test_s25_output_guard_replaces_an_unproven_reply_before_the_customer_sees_it(api, today):
+    api.worker = "down"
+    agent = make_agent(api, today, ScriptedLLM(overclaim=True))       # guard on (the default)
+    _, r = turn(agent, "Order 1042 is late, please escalate it.")
+    assert claim_types(r) == ["escalation_pending"], "the customer got the verified reply"
+    assert "complete" not in r["reply"]["text"].lower()
+    guard = [d for d in r["decisions"] if d["action"] == "output_guard"]
+    assert guard and "not proven" in guard[0]["reason"]
+    assert_claims_backed_by_evidence(r)
+
+
+# ------------------------------------------------------------------------------------- S17
+def test_s17_facts_are_reread_each_turn_so_corrections_count(agent, api):
+    conv, r1 = turn(agent, "Order 1043 is late, please escalate it.")
+    assert claim_types(r1) == ["escalation_declined"]            # 2 business days: not yet
+
+    # Support staff correct the promised date in the CRM between the two turns.
+    from datetime import date, timedelta
+    api.orders["1043"]["promisedDate"] = (date.today() - timedelta(days=12)).isoformat()
+
+    _, r2 = turn(agent, "Could you check again please?", conv)
+    assert r2["decisions"][0]["tool"] == "get_order" and "re-checking" in r2["decisions"][0]["reason"]
+    assert claim_types(r2) == ["escalation_completed"], "the corrected date was used, not the old one"
+
+
+def test_customer_claims_never_override_the_system(agent, api):
+    _, r = turn(agent, "Order 1043 is 10 business days late, it was promised weeks ago. Escalate it!")
+    assert claim_types(r) == ["escalation_declined"], "the CRM says 2 days; the customer's claim isn't a fact"
+    assert api.posts == []
+
+
+def test_asking_again_after_success_is_answered_without_a_second_escalation(agent, api):
+    conv, r1 = turn(agent, "Order 1042 is late, please escalate it.")
+    _, r2 = turn(agent, "Is it done?", conv)
+    assert claim_types(r2) == ["escalation_completed"]
+    assert len(api.escalations_for("C-1042")) == 1, "the same operation id was replayed, not a new one"
+    assert len({p["operation_id"] for p in api.posts}) == 1

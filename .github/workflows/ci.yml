@@ -261,23 +261,63 @@ jobs:
         run: |
           check() {
             python3 - <<'PY'
+          # Jaeger 2.x serves API v3 (/api/v3/...: OTLP JSON); older versions serve /api/... . Try both.
           import json, sys, urllib.request
+          from datetime import datetime, timedelta, timezone
+          BASE = "http://localhost:16686"
+          WANT = {"caseguard-agent", "case-api", "escalation-worker"}
+
           def get(path):
               try:
-                  with urllib.request.urlopen("http://localhost:16686" + path, timeout=5) as r:
-                      return r.status, json.load(r)
+                  with urllib.request.urlopen(BASE + path, timeout=5) as r:
+                      return r.status, r.read().decode()
               except urllib.error.HTTPError as e:
-                  return e.code, None
+                  return e.code, ""
               except Exception as e:
-                  return str(e), None
-          status, services = get("/api/services")
-          print("GET /api/services ->", status, (services or {}).get("data"))
-          status, traces = get("/api/traces?service=caseguard-agent&limit=50")
-          data = (traces or {}).get("data") or []
-          want = {"caseguard-agent", "case-api", "escalation-worker"}
-          best = max(({p["serviceName"] for p in t["processes"].values()} for t in data), key=len, default=set())
-          print("GET /api/traces ->", status, f"{len(data)} traces; most connected:", sorted(best))
-          sys.exit(0 if want <= best else 1)
+                  return str(e), ""
+
+          def docs(text):              # a JSON document, or newline-delimited JSON (streamed results)
+              try:
+                  return [json.loads(text)]
+              except ValueError:
+                  return [json.loads(l) for l in text.splitlines() if l.strip()]
+
+          def walk(o, key):            # every value stored under `key`, at any depth
+              if isinstance(o, dict):
+                  for k, v in o.items():
+                      if k == key:
+                          yield v
+                      yield from walk(v, key)
+              elif isinstance(o, list):
+                  for v in o:
+                      yield from walk(v, key)
+
+          now = datetime.now(timezone.utc)
+          fmt = lambda t: t.strftime("%Y-%m-%dT%H:%M:%SZ")
+          status, body = get("/api/v3/services")
+          print("GET /api/v3/services ->", status, body[:200])
+          q = (f"/api/v3/traces?query.service_name=caseguard-agent&query.search_depth=100"
+               f"&query.start_time_min={fmt(now - timedelta(hours=1))}&query.start_time_max={fmt(now + timedelta(minutes=5))}")
+          status, body = get(q)
+          services_by_trace = {}
+          if status == 200 and body:
+              for d in docs(body):
+                  for rs_list in walk(d, "resourceSpans"):
+                      for rs in rs_list:
+                          svc = next((a["value"].get("stringValue") for a in rs.get("resource", {}).get("attributes", [])
+                                      if a.get("key") == "service.name"), "?")
+                          for spans in walk(rs, "spans"):
+                              for sp in spans:
+                                  services_by_trace.setdefault(sp.get("traceId"), set()).add(svc)
+          else:                        # older Jaeger: legacy JSON API
+              status, body = get("/api/traces?service=caseguard-agent&limit=50")
+              for t in (json.loads(body).get("data") or [] if status == 200 else []):
+                  services_by_trace[t["traceID"]] = {p["serviceName"] for p in t["processes"].values()}
+          best = max(services_by_trace.values(), key=len, default=set())
+          print("GET traces ->", status, f"{len(services_by_trace)} traces; most connected:", sorted(best))
+          if not services_by_trace:
+              print("raw response start:", body[:300])
+          sys.exit(0 if WANT <= best else 1)
           PY
           }
           for i in $(seq 1 20); do check && exit 0; sleep 3; done

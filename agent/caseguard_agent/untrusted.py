@@ -8,21 +8,28 @@ from __future__ import annotations
 
 import re
 
-_PATTERNS = [
-    r"ignore (?:all |any |the )?(?:previous|prior|above) (?:instructions|rules|policies)",
-    r"system (?:note|prompt|message)",
+# High precision: clear attempts to override the agent. Enough to BLOCK a customer's message.
+_BLOCK = [
+    r"ignore (?:all |any |the )?(?:previous|prior|above|earlier) (?:instructions|rules|policies|guidance)",
+    r"system (?:note|prompt|message|override)",
     r"you are now",
     r"developer mode",
+]
+# Broader: suspicious in DATA (e.g. a note telling the agent what to do), but ordinary in a customer's
+# own words ("escalate it now!"). These only FLAG; they never block a customer.
+_FLAG_ONLY = [
     r"skip the approval",
     r"already approved",
     r"tell the customer",
     r"escalate (?:it|this|every|all)\b.*\b(?:immediately|now)",
 ]
-_RX = [re.compile(p, re.I) for p in _PATTERNS]
+_RX_BLOCK = [re.compile(p, re.I) for p in _BLOCK]
+_RX_ALL = _RX_BLOCK + [re.compile(p, re.I) for p in _FLAG_ONLY]
 
 
-def scan(text: str | None) -> list[str]:
-    """The instruction-like phrases found in `text` (empty list = nothing suspicious)."""
+def scan(text: str | None, *, block_only: bool = False) -> list[str]:
+    """Instruction-like phrases found in `text` (empty = nothing suspicious).
+    block_only=True: only the high-precision patterns, for deciding whether to BLOCK a message."""
     if not text:
         return []
-    return [m.group(0) for rx in _RX if (m := rx.search(text))]
+    return [m.group(0) for rx in (_RX_BLOCK if block_only else _RX_ALL) if (m := rx.search(text))]

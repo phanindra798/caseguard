@@ -1543,6 +1543,18 @@ Model names are **placeholders until we verify what's available and affordable**
 | LangGraph + tracing | The runner passes the turn's traceparent in `config["configurable"]`; node spans continue from it | LangGraph doesn't carry Python's tracing context into node execution |
 | Harness tracing | A minimal OTLP collector (handles chunked and gzip bodies); S26 asserts one trace across all services | Tracing is tested, not just looked at. Two harness bugs were found on the way: dropped chunked batches, and the fault proxy overwriting the agent's traceparent |
 
+### Implementation notes from Release 3.1 (evaluation)
+
+| Topic | What was built | Why |
+|---|---|---|
+| Dataset | 105 generated, labelled conversations; a **holdout** split written before the fix | Measure generalisation, not memorisation |
+| Independent scoring | The eval re-derives actions and checks evidence itself; it never trusts the agent's `allowed_claims` | The system must not grade itself |
+| Taxonomy-driven fix | Intent rule + high-precision blocking, from dev failures only | Fix the largest category, then re-measure on both splits |
+| Bad brains as controls | Over-claiming and gullible models, guard on and off | Proves the eval can tell good from bad, and puts a number on each safety layer |
+| "Is it done?" | Replays the same operation (same id) to report the real status | A question after an escalation must not open a second one |
+| Judge calibration | Agreement + Cohen's kappa against hand labels; rule-based baseline | A judge is an instrument: calibrate it before trusting it |
+| Live runs | Opt-in `workflow_dispatch` workflow; inputs passed via env vars (no script injection) | Paid API calls never run by accident; no fabricated numbers |
+
 ### Second review: code corrections
 
 | Review point | Bug in the old code | Fix | Where |

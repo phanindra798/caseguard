@@ -12,10 +12,10 @@ from __future__ import annotations
 import re
 
 from ..models import Claim, PlanStep, ReplyDraft
+from ..intent import wants_escalation as _wants_escalation
 from ..replies import render_reply
 
 _ORDER_ID = re.compile(r"\b(\d{4})\b")
-_WANTS_ESCALATION = re.compile(r"escalat|late|delay|not (?:arrived|here)|still waiting|hasn.t arrived", re.I)
 
 
 class ScriptedLLM:
@@ -27,7 +27,7 @@ class ScriptedLLM:
         latest = view["latest_message"]
         named = _ORDER_ID.findall(latest)
         order, orders = view.get("order"), view.get("orders")
-        wants_escalation = any(_WANTS_ESCALATION.search(m) for m in view["customer_messages"])
+        wants_escalation = _wants_escalation(view["customer_messages"])
 
         # 1. The customer named an order we haven't loaded yet → load it.
         if named and (order is None or order["id"] != named[-1]) and view.get("not_found_order") != named[-1]:
@@ -70,6 +70,11 @@ class ScriptedLLM:
                             reason="need the escalation policy that applies to this customer")
 
         # 5. Enough facts. Propose (code decides whether it's allowed).
+        if not wants_escalation and view.get("case") and view["case"]["id"] in view.get("escalated_cases", []):
+            # "Is it done?" after an escalation: replaying the SAME operation (same id, so never a second
+            # escalation) is how we read its real, current status.
+            return PlanStep(action="propose_escalation",
+                            reason="customer asks about the escalation already requested; replaying it reports its status")
         if wants_escalation:
             return PlanStep(action="propose_escalation",
                             reason="order, case and policy are known and the customer asked for an escalation")

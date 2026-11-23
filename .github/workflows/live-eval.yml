@@ -1,0 +1,64 @@
+name: Live model evaluation
+
+# Never runs automatically: it calls a paid model API. Start it from the Actions tab.
+# Setup: add the provider's API key as the repository secret LLM_API_KEY.
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: 'Model in LangChain init_chat_model format, "<provider>:<model-name>"'
+        required: true
+      provider_package:
+        description: 'LangChain integration package for that provider (pip name)'
+        required: true
+      api_key_env:
+        description: 'Environment variable name that provider reads its API key from'
+        required: true
+      trials:
+        description: 'Runs per conversation (models vary between runs)'
+        default: "5"
+
+jobs:
+  live-eval:
+    runs-on: ubuntu-latest
+    # Inputs reach the shell ONLY as environment variables, never pasted into commands with ${{ }},
+    # so a crafted input can't inject shell code.
+    env:
+      MODEL: ${{ inputs.model }}
+      PROVIDER_PACKAGE: ${{ inputs.provider_package }}
+      API_KEY_ENV: ${{ inputs.api_key_env }}
+      TRIALS: ${{ inputs.trials }}
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.12" }
+      - name: Install
+        run: pip install -e ".[live]" "$PROVIDER_PACKAGE"
+      - name: Agent evaluation with the live model (repeated trials)
+        env:
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+        run: |
+          [[ "$API_KEY_ENV" =~ ^[A-Z][A-Z0-9_]*$ ]] || { echo "api_key_env must be an env var name"; exit 1; }
+          [[ "$TRIALS" =~ ^[0-9]+$ ]] || { echo "trials must be a number"; exit 1; }
+          export "$API_KEY_ENV=$LLM_API_KEY" CASEGUARD_MODEL="$MODEL"
+          python -m caseguard_agent.evaluation --configs scripted,live --trials "$TRIALS" --report live-eval.md
+          { echo "## Agent evaluation: $MODEL"; cat live-eval.md; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Judge calibration with the live model
+        env:
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+        run: |
+          [[ "$API_KEY_ENV" =~ ^[A-Z][A-Z0-9_]*$ ]] || exit 1
+          export "$API_KEY_ENV=$LLM_API_KEY" CASEGUARD_MODEL="$MODEL"
+          python -m caseguard_agent.evaluation.judge --live | tee judge.md
+          { echo "## Judge calibration"; cat judge.md; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: live-eval
+          path: |
+            agent/live-eval.md
+            agent/live-eval.json
+            agent/judge.md

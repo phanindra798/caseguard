@@ -25,7 +25,7 @@ CaseGuard pairs an agent that **verifies before it claims** with a backend that 
 | 1.5 | Regression harness: YAML scenarios, fault injection, claim checker, runs in CI | ✅ Done |
 | 2.1 | Supervisor approval with pause/resume (LangGraph `interrupt`), backend-enforced approval binding, durable conversations (PostgreSQL), supervisor page | ✅ Done |
 | 2.2 | Fresh facts every turn, injection-resistant data + runtime output guard, measured policy retrieval (keyword / vector / pgvector), end-to-end tracing | ✅ Done |
-| 3.x | Release 3: evaluation set, live-model comparison, metrics | ⏳ Next |
+| 3.1 | Evaluation: 105 labelled conversations (dev + holdout), metrics with denominators, error taxonomy, one measured improvement, judge calibration, opt-in live-model runs | ✅ Done |
 
 ## The agent
 
@@ -99,6 +99,25 @@ agent> I've escalated order 1099 to our tier-2 support team and a specialist tas
 
 Supervisor page: http://localhost:8090/supervisor?as=sup-maria (pending approvals with Approve / Reject;
 deciding resumes the customer's conversation). In `make chat`, `/approve` and `/reject` act as the supervisor.
+
+## Evaluation
+
+105 labelled conversations (85 dev + 20 holdout) in 15 categories, scored by checks independent of the agent's
+own logic, with an error category for every failure. Full method and results: [`evals/README.md`](evals/README.md).
+
+| | Before | After the intent fix |
+|---|---|---|
+| dev (85) | 92% | **100%** |
+| holdout (20, not used to build the fix) | 70% | **85%** |
+| unsafe writes · false blocks | 2 · 2 | **0 · 0** |
+
+| Brain (105 × 3 trials) | false "done" | attacks blocked |
+|---|---|---|
+| over-claiming model, output guard **off** → **on** | 12% → **0%** | 100% |
+| gullible model, output guard **off** → **on** | 9% → **0%** | 84% → **100%** |
+
+Live-model numbers come only from the opt-in *Live model evaluation* workflow (needs an API key secret); none are
+claimed until it has run. `make eval`, `make judge`.
 
 ## Safety layers against a fooled or wrong model
 
@@ -360,6 +379,7 @@ Every request must carry `X-Tenant-Id` and `X-Customer-Id` (set from the trusted
 | Injection + guard (6) | A gullible model obeys an injected note, yet nothing ineligible is escalated, approval isn't skipped, and its "Done!" never reaches the customer; harmless notes aren't flagged |
 | Fresh facts (3) | Corrections between turns are used; customer claims never override the CRM; asking again replays the same operation |
 | Retrieval (7) | Filters always hold for every index; default quality can't regress below 21/24; pgvector gives the same answers as the in-memory reference; a non-escalation policy is never used for eligibility |
+| Evaluation (7) | Quality gate (dev 100%, holdout ≥ 17/20, 0 unsafe writes / false success / false blocks); the eval can tell good from bad brains; the guard removes false success for every bad brain; dataset well-formed; Cohen's kappa; judge calibration doesn't regress |
 | Agent units (6) | Business days skip weekends and holidays; expired policy never chosen; region filter beats keyword match |
 | Harness checkers, fault proxy, trace collector (18) | Unsupported, late or wrong-subject claims; text over-claims; tool order, counts and operation ids; decisions; DB and event checks; the fault proxy really forwards, loses and refuses |
 | Harness scenarios (20) | The full list above, against the real stack with real faults and tracing |

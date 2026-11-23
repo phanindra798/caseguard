@@ -185,7 +185,7 @@ def build_graph(deps: AgentDeps, checkpointer: Any = None):
         # so a correction made by support staff between turns is never missed.
         focus = (state.get("order") or {}).get("id") or state.get("focus_order_id")
         reset.update(focus_order_id=focus, order=None, case=None, policy=None, orders=None)
-        if scan(_latest_user(state)):
+        if scan(_latest_user(state), block_only=True):   # block only on clear attacks; flagging is broader
             reset["blocked"] = True
             reset["decisions"] = [{"action": "refuse", "reason": "prompt-injection pattern in the message"}]
         return reset
@@ -206,6 +206,8 @@ def build_graph(deps: AgentDeps, checkpointer: Any = None):
                 "policy": state.get("policy"),
                 "not_found_order": state.get("not_found_order"),
                 "focus_order_id": state.get("focus_order_id"),
+                # Cases this conversation already asked to escalate (fingerprints "escalate:<case id>").
+                "escalated_cases": [fp.split(":", 1)[1] for fp in (state.get("operations") or {})],
                 "no_case": state.get("no_case"),
                 "read_error": state.get("read_error"),
                 "steps_taken": state["steps"],

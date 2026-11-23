@@ -120,6 +120,11 @@ jobs:
         with: { python-version: "3.12", cache: pip, cache-dependency-path: agent/pyproject.toml }
       - run: pip install -e ".[dev]"
       - run: python -m pytest -q
+      - name: Agent evaluation (105 labelled conversations, deterministic brains)
+        run: |
+          python -m caseguard_agent.evaluation --trials 1 --report eval-report.md
+          python -m caseguard_agent.evaluation.judge > judge.md
+          { echo "## Agent evaluation"; cat eval-report.md; echo; echo "## Judge calibration (baseline)"; cat judge.md; } >> "$GITHUB_STEP_SUMMARY"
       - name: Retrieval eval with a semantic embedding model (measurement, not a gate)
         continue-on-error: true        # the model download may be unavailable; the numbers are informational
         run: |

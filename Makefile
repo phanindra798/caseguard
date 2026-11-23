@@ -1,5 +1,5 @@
 # Common commands. Run `make help` to list them.
-.PHONY: help infra up down run test test-api test-worker test-agent agent-venv e2e chat harness harness-unit harness-tracing otel-agent retrieval-eval contract demo-worker demo-relay
+.PHONY: help infra up down run test test-api test-worker test-agent agent-venv e2e chat harness harness-unit harness-tracing otel-agent retrieval-eval eval judge contract demo-worker demo-relay
 
 help:            ## Show this list
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  make %-12s %s\n", $$1, $$2}'
@@ -50,6 +50,12 @@ harness-tracing: ## All scenarios with every service traced; S26 checks one trac
 
 retrieval-eval:  ## Measure policy retrieval on the labelled queries in evals/retrieval.yaml
 	cd agent && .venv/bin/python -m caseguard_agent.retrieval_eval
+
+eval:            ## Evaluate the agent on 105 labelled conversations (all configurations, 3 trials)
+	cd agent && .venv/bin/python -m caseguard_agent.evaluation --trials 3 --report ../eval-report.md
+
+judge:           ## Calibrate the (baseline) judge against the hand-labelled replies
+	cd agent && .venv/bin/python -m caseguard_agent.evaluation.judge
 
 contract:        ## Regenerate case-api/openapi.json after an intentional API change
 	cd case-api && UPDATE_CONTRACT=true ./mvnw -B test -Dtest=ApiContractTest

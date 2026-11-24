@@ -1565,6 +1565,17 @@ Model names are **placeholders until we verify what's available and affordable**
 | Schema failures | A reply that doesn't match the schema raises, and its tokens are still counted | Failed calls cost money too |
 | Landing README | Pitch, measured results, one diagram, claim → evidence table, quickstart, honest limits | A reviewer decides in 30 seconds |
 
+### Implementation notes from Release 4.1 (load and performance)
+
+| Topic | What was built | Why |
+|---|---|---|
+| Load generator | asyncio + httpx against the real stack; same-key retries shuffled in to race their originals; invariants checked in the database | Idempotency must hold under real concurrency, not just in unit tests |
+| Lag metrics | Outbox publish lag and end-to-end lag from database timestamps | They show WHERE the time goes, not just how long it takes |
+| Relay batching | Send the whole batch, wait once for all acks, mark with one `UPDATE … ANY(…)`, drain full batches without sleeping | Publish lag p95 6.0 s → 0.2 s; same at-least-once guarantee |
+| Worker concurrency | One consumer thread per partition (3) | Modest, consistent gain (end-to-end p50 232 → 156 ms over 3 runs each) |
+| Measurement hygiene | Three runs per configuration; medians and ranges | A single run showed a 3.5× p95 gain that repeats didn't confirm |
+| CI gate | The load-test job gates on invariants only | Latency on shared runners is too noisy to gate on |
+
 ### Second review: code corrections
 
 | Review point | Bug in the old code | Fix | Where |

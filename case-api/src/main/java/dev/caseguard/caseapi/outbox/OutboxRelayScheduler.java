@@ -16,6 +16,7 @@ import org.springframework.stereotype.Component;
 public class OutboxRelayScheduler {
 
   private static final Logger log = LoggerFactory.getLogger(OutboxRelayScheduler.class);
+  private static final int MAX_ROUNDS_PER_TICK = 50;
   private final OutboxRelay relay;
 
   public OutboxRelayScheduler(OutboxRelay relay) {
@@ -25,7 +26,11 @@ public class OutboxRelayScheduler {
   @Scheduled(fixedDelayString = "${caseguard.relay.interval-ms:200}")
   public void tick() {
     try {
-      relay.relayBatch();
+      // A FULL batch means there is probably more waiting: keep going instead of sleeping until the
+      // next tick (bounded, so one tick can't run forever).
+      for (int round = 0; round < MAX_ROUNDS_PER_TICK && relay.relayBatch() >= relay.batchSize(); round++) {
+        // keep draining
+      }
     } catch (RuntimeException e) {
       // Broker down, etc.: the batch rolled back; the next tick retries. Never kill the scheduler.
       log.warn("outbox relay tick failed, will retry: {}", e.getMessage());

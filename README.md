@@ -20,6 +20,10 @@ answer to those four problems.
 - **Safe when the model is fooled.** The model can only read; code decides eligibility and approvals; the
   backend enforces ownership and approvals again. Across all 1,575 evaluation runs, including a deliberately
   gullible model that obeys instructions hidden in the data, there were **0 unsafe writes**.
+- **Fast under load, still exactly once.** A load test of the real pipeline (2,000 escalations, 20% same-key
+  retries racing their originals) found the outbox relay waiting for Kafka one message at a time; batching
+  cut end-to-end lag p50 from **3.9 s to 0.16 s** (p95 6.2 s → ~1.1 s) with every invariant intact
+  ([`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)).
 - **Measured, not assumed.** 105 labelled conversations with a holdout split, an error taxonomy and one fix
   measured on both splits (dev 92% → **100%**, holdout 70% → **85%**); 20 fault-injection scenarios against
   the real stack, including **one OpenTelemetry trace** from the agent through Kafka to the worker.
@@ -54,6 +58,7 @@ decides *what is allowed and what is true*; the harness checks both.
 | Other customers' data is invisible | Ownership in every query, 404 not 403; `OwnershipTest`; harness S08 |
 | Expensive actions need a human | Approval bound to operation, case version and policy, enforced by the backend; harness S12–S14, S24 |
 | Injected instructions don't work | Gullible test model; harness S15; evaluation category `injection_in_data` |
+| Exactly once under load, not just in unit tests | 2,000 concurrent escalations with 20% same-key retries → 2,000 escalations, events and tasks (`make loadtest`; CI job `load-test`) |
 | Retrieval quality is measured | 24 labelled queries: keyword 21/24 vs semantic model 19/24 vs hybrid 21/24 (`evals/README.md`) |
 
 ## Quickstart
@@ -74,10 +79,10 @@ make chat
 
 Try *"Order 1042 is late, please escalate it."*, then *"Order 1099 is late too"* and type `/approve`.
 Then open Jaeger at http://localhost:16686 (service `caseguard-agent`) to see that conversation as one trace.
-Run everything that CI runs: `make test`, `make harness-tracing`, `make eval`, `make demo-worker`.
+Run everything that CI runs: `make test`, `make harness-tracing`, `make eval`, `make loadtest`, `make demo-worker`.
 
 **Stack:** Java 21 · Spring Boot 4 · PostgreSQL 16 + pgvector · Apache Kafka 4 (KRaft) · Python 3.12 ·
-LangGraph · FastAPI · OpenTelemetry + Jaeger · Docker Compose · GitHub Actions (7 jobs).
+LangGraph · FastAPI · OpenTelemetry + Jaeger · Docker Compose · GitHub Actions (8 jobs).
 
 **Honest limits:** every evaluation number comes from a deterministic scripted agent and deliberately bad
 test models; there is no live-model result yet (the opt-in *Live model evaluation* workflow runs one when an
@@ -471,3 +476,4 @@ Tests were also verified by **breaking the code on purpose**: removing the owner
 | 2.2 | Fresh facts every turn, injection-resistant data + runtime output guard, measured policy retrieval (keyword / vector / pgvector), end-to-end tracing | ✅ Done |
 | 3.1 | Evaluation: 105 labelled conversations (dev + holdout), metrics with denominators, error taxonomy, one measured improvement, judge calibration, opt-in live-model runs | ✅ Done |
 | 3.2 | Token and cost accounting (real counts from live responses, clearly-labelled estimates for the scripted agent), portfolio README | ✅ Done |
+| 4.1 | Load test of the real pipeline; relay batching (publish lag ~30× lower) and worker concurrency, measured with repeated runs | ✅ Done |

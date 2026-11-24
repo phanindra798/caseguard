@@ -18,6 +18,9 @@ spring:
       value-serializer: org.apache.kafka.common.serialization.StringSerializer
     listener:
       ack-mode: manual_immediate        # offset committed exactly when we call ack.acknowledge()
+      # One consumer thread per partition (the topic has 3). Ordering per escalation is kept, because
+      # one escalation id always maps to one partition. Load test: a single thread was the bottleneck.
+      concurrency: ${WORKER_CONCURRENCY:3}
 
 caseguard:
   topics:

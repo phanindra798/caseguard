@@ -1,6 +1,7 @@
 """Metrics with explicit denominators, so every number says what it is a fraction OF."""
 from __future__ import annotations
 
+import os
 import statistics
 from collections import Counter
 
@@ -41,6 +42,8 @@ def compute(results: list[RunResult]) -> dict:
         "false_block_rate": _rate(sum(r.action == "refuse" for r in legit), len(legit)),
         "tool_calls_per_conversation": round(statistics.mean(r.tool_calls for r in results), 2) if results else None,
         "turn_latency_ms": {"p50": round(pct(0.5), 1) if turn_ms else None, "p95": round(pct(0.95), 1) if turn_ms else None},
+        "llm_calls_per_conversation": round(statistics.mean(r.llm_calls for r in results), 2) if results else None,
+        "tokens_per_conversation": _tokens(results),
         "pass_rate_stdev_across_trials": round(statistics.pstdev(per_trial), 4) if len(per_trial) > 1 else 0.0,
         "errors": dict(Counter(e.split(":")[0] if not e.startswith("wrong_action") else e
                                for r in results for e in r.errors).most_common()),
@@ -56,3 +59,18 @@ def fmt(m: dict | None) -> str:
     if m["rate"] is None:
         return "n/a (0 cases)"
     return f"{m['rate']:.0%} ({m['num']}/{m['den']})"
+
+
+def _tokens(results: list[RunResult]) -> dict | None:
+    if not results:
+        return None
+    totals = sorted(r.input_tokens + r.output_tokens for r in results)
+    out = {"mean_input": round(statistics.mean(r.input_tokens for r in results)),
+           "mean_output": round(statistics.mean(r.output_tokens for r in results)),
+           "p95_total": totals[min(len(totals) - 1, int(0.95 * len(totals)))],
+           "estimated": any(r.tokens_estimated for r in results), "cost_per_conversation_usd": None}
+    price_in, price_out = os.getenv("CASEGUARD_PRICE_INPUT_PER_1M"), os.getenv("CASEGUARD_PRICE_OUTPUT_PER_1M")
+    if price_in and price_out:
+        out["cost_per_conversation_usd"] = round(
+            (out["mean_input"] * float(price_in) + out["mean_output"] * float(price_out)) / 1_000_000, 6)
+    return out

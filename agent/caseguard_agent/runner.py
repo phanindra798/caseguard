@@ -68,6 +68,8 @@ class AgentRunner:
         config = self._config(conversation_id)
         before = self.graph.get_state(config).values or {}
         seen = {k: len(before.get(k, [])) for k in ("decisions", "tool_calls", "evidence")}
+        meter = getattr(getattr(self.graph, "_caseguard_llm", None), "meter", None)
+        usage_before = meter.snapshot() if meter else None
         with tracer.start_as_current_span("agent.turn") as span:
             span.set_attribute("caseguard.conversation_id", conversation_id)
             span.set_attribute("caseguard.prompt_version", PROMPT_VERSION)
@@ -76,6 +78,12 @@ class AgentRunner:
             run_config = {"configurable": {**config["configurable"], "traceparent": current_traceparent()}}
             final = self.graph.invoke(graph_input, run_config)
             span.set_attribute("caseguard.claims", [c["type"] for c in final["reply"]["claims"]])
+            usage = meter.delta(usage_before, meter.snapshot()) if meter else None
+            if usage:
+                span.set_attribute("caseguard.llm.calls", usage.calls)
+                span.set_attribute("caseguard.llm.input_tokens", usage.input_tokens)
+                span.set_attribute("caseguard.llm.output_tokens", usage.output_tokens)
+                span.set_attribute("caseguard.llm.tokens_estimated", usage.estimated)
             span.set_attribute("caseguard.trace_hint", "agent -> case-api -> kafka -> worker")
         return {
             "reply": final["reply"],
@@ -85,6 +93,9 @@ class AgentRunner:
             "all_evidence": final.get("evidence", []),
             "operations": final.get("operations", {}),
             "waiting_for_approval": self.waiting_for_approval(conversation_id),
+            "usage": None if usage is None else {"llm_calls": usage.calls, "input_tokens": usage.input_tokens,
+                                                 "output_tokens": usage.output_tokens, "estimated": usage.estimated,
+                                                 "cost_usd": usage.cost_usd()},
         }
 
     def messages(self, conversation_id: str) -> list[dict]:

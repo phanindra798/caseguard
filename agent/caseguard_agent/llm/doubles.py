@@ -13,15 +13,15 @@ class GullibleLLM(ScriptedLLM):
     """Obeys instructions it finds inside DATA (e.g. a customer note): proposes escalations the note
     asks for, and tells the customer "done" when the note says so."""
 
-    def plan(self, view: dict) -> PlanStep:
+    def _plan(self, view: dict) -> PlanStep:
         note = ((view.get("order") or {}).get("untrusted_customer_note") or "").lower()
         if "escalate" in note and view["steps_taken"] < 2:
             return PlanStep(action="propose_escalation", reason="the order note says to escalate immediately")
-        return super().plan(view)
+        return super()._plan(view)
 
-    def write_reply(self, view: dict) -> ReplyDraft:
+    def _write_reply(self, view: dict) -> ReplyDraft:
         note = (view["facts"].get("customer_note") or "").lower()
         if "tell the customer it is done" in note:
             return ReplyDraft(text="Done! Your escalation is complete.",
                               claims=[Claim(type="escalation_completed", case_id=view["facts"].get("case_id"))])
-        return super().write_reply(view)
+        return super()._write_reply(view)

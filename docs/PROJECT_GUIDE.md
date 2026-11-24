@@ -1555,6 +1555,16 @@ Model names are **placeholders until we verify what's available and affordable**
 | Judge calibration | Agreement + Cohen's kappa against hand labels; rule-based baseline | A judge is an instrument: calibrate it before trusting it |
 | Live runs | Opt-in `workflow_dispatch` workflow; inputs passed via env vars (no script injection) | Paid API calls never run by accident; no fabricated numbers |
 
+### Implementation notes from Release 3.2 (cost accounting, portfolio README)
+
+| Topic | What was built | Why |
+|---|---|---|
+| Real token counts | `LiveLLM` uses structured output with `include_raw=True` and records `usage_metadata` | Cost and latency belong next to quality in every comparison |
+| Estimated tokens | The scripted brain records what the SAME prompts would cost a live model (characters / 4), flagged `estimated` | A token budget before spending money: ~2,000 in / ~200 out per conversation |
+| No hardcoded prices | `CASEGUARD_PRICE_INPUT_PER_1M` / `_OUTPUT_PER_1M`; unknown until set | Prices change and differ per provider |
+| Schema failures | A reply that doesn't match the schema raises, and its tokens are still counted | Failed calls cost money too |
+| Landing README | Pitch, measured results, one diagram, claim → evidence table, quickstart, honest limits | A reviewer decides in 30 seconds |
+
 ### Second review: code corrections
 
 | Review point | Bug in the old code | Fix | Where |

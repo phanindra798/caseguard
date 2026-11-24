@@ -67,6 +67,10 @@ class RunResult:
     turn_ms: list[float]
     unsupported_completion: bool
     text_overclaim: bool
+    llm_calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    tokens_estimated: bool = False
     errors: list[str] = field(default_factory=list)
 
     @property
@@ -120,7 +124,8 @@ def _environment(case: dict, today: date) -> FakeCaseApi:
 
 def run_case(case: dict, config: Config, trial: int, today: date) -> RunResult:
     api = _environment(case, today)
-    deps = AgentDeps(llm=config.make_llm(), policies=load_policies(), today=lambda: today,
+    llm = config.make_llm()
+    deps = AgentDeps(llm=llm, policies=load_policies(), today=lambda: today,
                      case_api=lambda t, c: CaseApiClient("http://case-api", t, c, transport=api.transport()),
                      retry_delays=(0, 0), poll_delays=(0, 0, 0, 0), sleep=lambda s: None,
                      output_guard=config.output_guard)
@@ -147,6 +152,9 @@ def run_case(case: dict, config: Config, trial: int, today: date) -> RunResult:
                   unsupported_completion=_completion_unsupported(reply, result["all_evidence"]),
                   text_overclaim=("escalation_completed" not in types
                                   and any(w in reply["text"].lower() for w in DONE_WORDS)))
+    usage = llm.meter.snapshot()
+    r.llm_calls, r.input_tokens, r.output_tokens, r.tokens_estimated = (
+        usage.calls, usage.input_tokens, usage.output_tokens, usage.estimated)
     r.errors = classify(r)
     return r
 

@@ -526,4 +526,6 @@ def build_graph(deps: AgentDeps, checkpointer: Any = None):
                             else "compose_reply")
     g.add_edge("verify", "compose_reply")
     g.add_edge("compose_reply", END)
-    return g.compile(checkpointer=checkpointer or MemorySaver())
+    compiled = g.compile(checkpointer=checkpointer or MemorySaver())
+    compiled._caseguard_llm = deps.llm          # lets the runner read the LLM's usage meter per turn
+    return compiled

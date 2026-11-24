@@ -14,16 +14,30 @@ import re
 from ..models import Claim, PlanStep, ReplyDraft
 from ..intent import wants_escalation as _wants_escalation
 from ..replies import render_reply
+from ..usage import UsageMeter, estimate_tokens
+from .prompts import PLANNER_PROMPT, REPLY_PROMPT
 
 _ORDER_ID = re.compile(r"\b(\d{4})\b")
 
 
 class ScriptedLLM:
-    def __init__(self, overclaim: bool = False):
+    def __init__(self, overclaim: bool = False, meter: UsageMeter | None = None):
         self.overclaim = overclaim
+        # No model is called, but record what the SAME prompts would cost a live model (estimated).
+        self.meter = meter or UsageMeter()
+
+    def _account(self, system: str, view: dict, output: str) -> None:
+        import json
+        self.meter.record(estimate_tokens(system + json.dumps(view, default=str)), estimate_tokens(output),
+                          estimated=True)
 
     # ------------------------------------------------------------------ planning
     def plan(self, view: dict) -> PlanStep:
+        step = self._plan(view)
+        self._account(PLANNER_PROMPT, view, step.model_dump_json())
+        return step
+
+    def _plan(self, view: dict) -> PlanStep:
         latest = view["latest_message"]
         named = _ORDER_ID.findall(latest)
         order, orders = view.get("order"), view.get("orders")
@@ -82,6 +96,11 @@ class ScriptedLLM:
 
     # ------------------------------------------------------------------ replying
     def write_reply(self, view: dict) -> ReplyDraft:
+        draft = self._write_reply(view)
+        self._account(REPLY_PROMPT, view, draft.model_dump_json())
+        return draft
+
+    def _write_reply(self, view: dict) -> ReplyDraft:
         allowed = [Claim(**c) for c in view["allowed_claims"]]
         f = view["facts"]
         if self.overclaim and f.get("escalation_id"):

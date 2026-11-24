@@ -1,31 +1,89 @@
 # CaseGuard
 
-**A tool-using AI support agent for CRM escalations, plus a regression harness that catches the agent when what it says disagrees with what actually happened.**
+[![CI](https://github.com/phanindra798/caseguard/actions/workflows/ci.yml/badge.svg)](https://github.com/phanindra798/caseguard/actions/workflows/ci.yml)
 
-> 🚧 Work in progress, built phase by phase. See [`docs/PROJECT_GUIDE.md`](docs/PROJECT_GUIDE.md) for the full design.
+**An AI support agent that takes real actions in a CRM, built so it can't claim something happened when it
+didn't, plus the harness and evaluation that prove it.**
 
-## The problem
+AI agents that *act* fail in ways chatbots don't: they say "your case is escalated" when the backend call
+failed, they create duplicates when they retry after a timeout, they get quietly worse after a prompt change,
+and they can be talked into things by text hidden in the data they read. CaseGuard is a complete, tested
+answer to those four problems.
 
-AI support agents don't just talk; they take actions. In production they can:
+## In 30 seconds
 
-- claim "your case is escalated" when the backend call actually failed;
-- create duplicate tasks when they retry after a timeout;
-- get quietly worse after a prompt or model change.
+- **Verify before claiming.** The agent may only say what timestamped evidence from the real system supports.
+  A runtime output guard replaces any unproven reply. Measured: false "done" **12% → 0%** for a model that
+  over-claims.
+- **Exactly one effect under crashes.** Idempotency keys, a transactional outbox and an idempotent Kafka
+  consumer. A script really kills the worker mid-flight in CI and proves there's still exactly one task.
+- **Safe when the model is fooled.** The model can only read; code decides eligibility and approvals; the
+  backend enforces ownership and approvals again. Across all 1,575 evaluation runs, including a deliberately
+  gullible model that obeys instructions hidden in the data, there were **0 unsafe writes**.
+- **Measured, not assumed.** 105 labelled conversations with a holdout split, an error taxonomy and one fix
+  measured on both splits (dev 92% → **100%**, holdout 70% → **85%**); 20 fault-injection scenarios against
+  the real stack, including **one OpenTelemetry trace** from the agent through Kafka to the worker.
 
-CaseGuard pairs an agent that **verifies before it claims** with a backend that is **idempotent under crashes and replays**, and a **harness** that checks the agent's reply, its tool calls, and the real database state, under injected failures.
+## Architecture
 
-## Status
+```mermaid
+flowchart LR
+    C([Customer]) --> A["Agent<br/>Python · LangGraph<br/>plan → verify → reply"]
+    S([Supervisor]) --> UI["Supervisor page"] --> A
+    A -- "HTTP + idempotency key<br/>(trusted identity)" --> API["Case API<br/>Java · Spring Boot"]
+    API -- "one transaction:<br/>row + outbox" --> DB[("PostgreSQL<br/>+ pgvector")]
+    DB -- "outbox relay" --> K[["Kafka"]]
+    K --> W["Escalation worker<br/>Java · dedupe"]
+    W --> DB
+    A -. "conversation state" .-> DB
+    A & API & W -. "OpenTelemetry" .-> J["Jaeger"]
+    H["Harness · faults · evaluation"] -. "drives & checks" .-> A
+```
 
-| Phase | What | Status |
-|---|---|---|
-| 1.1 | Case API: orders and cases with tenant/customer ownership checks | ✅ Done |
-| 1.2 | Idempotent escalation endpoint + transactional outbox, concurrency and atomicity tests, OpenAPI contract | ✅ Done |
-| 1.3 | Outbox relay → Kafka → worker with dedupe, dead-letter topic, **real crash-and-replay demo** | ✅ Done |
-| 1.4 | LangGraph agent: planner loop, eligibility in code, operation ids, reconcile, verify-before-claim | ✅ Done |
-| 1.5 | Regression harness: YAML scenarios, fault injection, claim checker, runs in CI | ✅ Done |
-| 2.1 | Supervisor approval with pause/resume (LangGraph `interrupt`), backend-enforced approval binding, durable conversations (PostgreSQL), supervisor page | ✅ Done |
-| 2.2 | Fresh facts every turn, injection-resistant data + runtime output guard, measured policy retrieval (keyword / vector / pgvector), end-to-end tracing | ✅ Done |
-| 3.1 | Evaluation: 105 labelled conversations (dev + holdout), metrics with denominators, error taxonomy, one measured improvement, judge calibration, opt-in live-model runs | ✅ Done |
+**The rule that runs through everything:** the model decides *what to find out and what to propose*; code
+decides *what is allowed and what is true*; the harness checks both.
+
+## Claims and the evidence behind them
+
+| Claim | Evidence |
+|---|---|
+| Never says "done" without proof | `escalation_completed` needs `COMPLETED` evidence for the same escalation and case, seen before the reply; harness S06, S07, S20, S25 |
+| Retries never duplicate | Same operation id on every retry; `UNIQUE` constraints; 20 simultaneous requests → 1 row (`EscalationReliabilityTest`) |
+| Crashes never duplicate or lose work | Real JVM kills in `scripts/demo-crash-replay.sh` (CI job `crash-demo`); harness S04, S05 |
+| Timeouts are "unknown", not "failed" | `reconcile` asks before any fallback; harness S19, S23 |
+| Other customers' data is invisible | Ownership in every query, 404 not 403; `OwnershipTest`; harness S08 |
+| Expensive actions need a human | Approval bound to operation, case version and policy, enforced by the backend; harness S12–S14, S24 |
+| Injected instructions don't work | Gullible test model; harness S15; evaluation category `injection_in_data` |
+| Retrieval quality is measured | 24 labelled queries: keyword 21/24 vs semantic model 19/24 vs hybrid 21/24 (`evals/README.md`) |
+
+## Quickstart
+
+Docker and Java 21 (Maven is not needed: `./mvnw`). Python 3.12+ for the agent tools.
+
+```bash
+make up
+```
+
+```bash
+make agent-venv
+```
+
+```bash
+make chat
+```
+
+Try *"Order 1042 is late, please escalate it."*, then *"Order 1099 is late too"* and type `/approve`.
+Then open Jaeger at http://localhost:16686 (service `caseguard-agent`) to see that conversation as one trace.
+Run everything that CI runs: `make test`, `make harness-tracing`, `make eval`, `make demo-worker`.
+
+**Stack:** Java 21 · Spring Boot 4 · PostgreSQL 16 + pgvector · Apache Kafka 4 (KRaft) · Python 3.12 ·
+LangGraph · FastAPI · OpenTelemetry + Jaeger · Docker Compose · GitHub Actions (7 jobs).
+
+**Honest limits:** every evaluation number comes from a deterministic scripted agent and deliberately bad
+test models; there is no live-model result yet (the opt-in *Live model evaluation* workflow runs one when an
+API key is added). The scripted agent's hand-written intent rules reach 85% on unseen phrasings, which is the
+argument for a real model, measured with the same dataset. Labels for the judge calibration were written by
+the author.
 
 ## The agent
 
@@ -399,3 +457,17 @@ Tests were also verified by **breaking the code on purpose**: removing the owner
 - **Apache Kafka 4 in KRaft mode** (no ZooKeeper): the official image runs as a single node locally and in CI.
 - **Fail points.** Named spots in the code where tests can force a crash at an exact moment.
 - **Flyway owns the schema; Hibernate only validates it.** Money is integer cents. Demo data is kept separate from migrations.
+
+## Build log
+
+| Phase | What | Status |
+|---|---|---|
+| 1.1 | Case API: orders and cases with tenant/customer ownership checks | ✅ Done |
+| 1.2 | Idempotent escalation endpoint + transactional outbox, concurrency and atomicity tests, OpenAPI contract | ✅ Done |
+| 1.3 | Outbox relay → Kafka → worker with dedupe, dead-letter topic, **real crash-and-replay demo** | ✅ Done |
+| 1.4 | LangGraph agent: planner loop, eligibility in code, operation ids, reconcile, verify-before-claim | ✅ Done |
+| 1.5 | Regression harness: YAML scenarios, fault injection, claim checker, runs in CI | ✅ Done |
+| 2.1 | Supervisor approval with pause/resume (LangGraph `interrupt`), backend-enforced approval binding, durable conversations (PostgreSQL), supervisor page | ✅ Done |
+| 2.2 | Fresh facts every turn, injection-resistant data + runtime output guard, measured policy retrieval (keyword / vector / pgvector), end-to-end tracing | ✅ Done |
+| 3.1 | Evaluation: 105 labelled conversations (dev + holdout), metrics with denominators, error taxonomy, one measured improvement, judge calibration, opt-in live-model runs | ✅ Done |
+| 3.2 | Token and cost accounting (real counts from live responses, clearly-labelled estimates for the scripted agent), portfolio README | ✅ Done |

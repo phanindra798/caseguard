@@ -39,6 +39,14 @@ def render(named: list[tuple[str, dict]], n_cases: int, trials: int) -> str:
     out.append("| tool calls per conversation | " + " | ".join(str(m["tool_calls_per_conversation"]) for _, m in named) + " |")
     out.append("| turn latency p50 / p95 (ms) | " + " | ".join(
         f"{m['turn_latency_ms']['p50']} / {m['turn_latency_ms']['p95']}" for _, m in named) + " |")
+    out.append("| LLM calls per conversation | " + " | ".join(str(m["llm_calls_per_conversation"]) for _, m in named) + " |")
+    out.append("| tokens per conversation (in / out, p95 total) | " + " | ".join(
+        f"{m['tokens_per_conversation']['mean_input']} / {m['tokens_per_conversation']['mean_output']}, "
+        f"p95 {m['tokens_per_conversation']['p95_total']}{' (estimated)' if m['tokens_per_conversation']['estimated'] else ''}"
+        for _, m in named) + " |")
+    out.append("| cost per conversation (USD) | " + " | ".join(
+        "set CASEGUARD_PRICE_*" if m["tokens_per_conversation"]["cost_per_conversation_usd"] is None
+        else f"{m['tokens_per_conversation']['cost_per_conversation_usd']:.5f}" for _, m in named) + " |")
     out.append("| pass-rate stdev across trials | " + " | ".join(str(m["pass_rate_stdev_across_trials"]) for _, m in named) + " |")
     for name, m in named:
         if m["errors"]:

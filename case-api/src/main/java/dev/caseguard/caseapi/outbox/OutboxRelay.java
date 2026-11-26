@@ -2,6 +2,9 @@ package dev.caseguard.caseapi.outbox;
 
 import dev.caseguard.caseapi.reliability.FailPoints;
 import dev.caseguard.caseapi.tracing.TraceContext;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.context.Scope;
 import java.nio.charset.StandardCharsets;
@@ -58,9 +61,11 @@ public class OutboxRelay {
   private final JsonMapper json;
   private final String topic;
   private final int batchSize;
+  private final Counter published;
+  private final Timer batchTimer;
 
   public OutboxRelay(JdbcTemplate jdbc, TransactionTemplate tx, KafkaTemplate<String, String> kafka,
-                     FailPoints failPoints, JsonMapper json,
+                     FailPoints failPoints, JsonMapper json, MeterRegistry registry,
                      @Value("${caseguard.topics.escalation-requested}") String topic,
                      @Value("${caseguard.relay.batch-size:100}") int batchSize) {
     this.jdbc = jdbc;
@@ -70,6 +75,13 @@ public class OutboxRelay {
     this.json = json;
     this.topic = topic;
     this.batchSize = batchSize;
+    this.published = Counter.builder("caseguard.outbox.published")
+        .description("Outbox events published to Kafka (counted after the batch is marked and committed)")
+        .baseUnit("events")
+        .register(registry);
+    this.batchTimer = Timer.builder("caseguard.outbox.relay.batch")
+        .description("Time to publish one non-empty batch: send all, wait for every ack, mark, commit")
+        .register(registry);
   }
 
   public int batchSize() {
@@ -86,7 +98,8 @@ public class OutboxRelay {
    * method on the same object, and a self-call bypasses Spring's @Transactional proxy.
    */
   public int relayBatch() {
-    Integer published = tx.execute(status -> {
+    Timer.Sample sample = Timer.start();
+    Integer sent = tx.execute(status -> {
       List<Row> rows = jdbc.query("""
           select id, aggregate_id, event_type, payload::text, created_at, trace_parent
             from outbox
@@ -110,7 +123,12 @@ public class OutboxRelay {
       log.info("published {} event(s)", rows.size());
       return rows.size();
     });
-    return published == null ? 0 : published;
+    int n = sent == null ? 0 : sent;
+    if (n > 0) {                          // empty polls every 200 ms would drown the real batches
+      sample.stop(batchTimer);
+      published.increment(n);             // only after COMMIT: a rolled-back batch is not counted
+    }
+    return n;
   }
 
   /** Start sending one row; returns the broker acknowledgement as a future (doesn't wait). */

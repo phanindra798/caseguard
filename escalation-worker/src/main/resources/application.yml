@@ -25,8 +25,31 @@ spring:
 caseguard:
   topics:
     escalation-requested: escalation.requested
+    retention: P7D
+    segment: P1D
   worker:
     task-queue: tier2-support
+  retention:
+    enabled: ${RETENTION_ENABLED:true}
+    interval: PT1H
+    # Must outlive the LONGEST a message can stay in Kafka (retention + segment = 8 days here) plus a
+    # margin. Checked against the broker before every run; if it doesn't hold, nothing is deleted.
+    processed-events: P14D
+    safety-margin: P1D
+    batch-size: 1000
+    max-batches-per-run: 100
+
+server:
+  port: ${WORKER_PORT:8082}       # only for /actuator/health and /actuator/prometheus
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  metrics:
+    tags:
+      application: ${spring.application.name}
 
 logging:
   level:

@@ -16,3 +16,7 @@ final:
     - {sql: "select count(*) from follow_up_tasks", equals: 1}
     - {sql: "select count(*) from processed_events", equals: 1}
     - {sql: "select status from escalations", equals: COMPLETED}
+  metrics:
+    # The restarted worker saw the event ONLY as a duplicate: it never did the work a second time.
+    - {service: worker, name: caseguard_worker_events_total, labels: {outcome: duplicate}, delta: 1}
+    - {service: worker, name: caseguard_worker_events_total, labels: {outcome: processed}, delta: 0}

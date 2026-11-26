@@ -29,6 +29,7 @@ class StackConfig:
     pg_password: str = os.getenv("PGPASSWORD", "caseguard")
     kafka: str = os.getenv("KAFKA_BOOTSTRAP", "localhost:9092")
     api_port: int = 8094
+    worker_port: int = 8096       # the worker's /actuator endpoints (8095 is the fault proxy)
     database: str = "caseguard_harness"
     run_id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
 
@@ -139,7 +140,8 @@ class Stack:
         self.stop_worker()
         self._worker_starts += 1
         log = open(self.log_dir / f"worker-{self._worker_starts}.log", "w")
-        env = self._env(fail_point) | {"SPRING_KAFKA_CONSUMER_GROUP_ID": f"worker-harness-{self.cfg.run_id}"}
+        env = self._env(fail_point) | {"SPRING_KAFKA_CONSUMER_GROUP_ID": f"worker-harness-{self.cfg.run_id}",
+                                       "WORKER_PORT": str(self.cfg.worker_port)}
         self.worker = subprocess.Popen(self._java(WORKER_JAR, "escalation-worker"), env=env, stdout=log,
                                        stderr=subprocess.STDOUT)
         # Ready = partitions assigned (Spring Kafka logs it), so no event is published before we listen.
@@ -162,6 +164,24 @@ class Stack:
 
     def worker_logs(self) -> str:
         return "\n".join(p.read_text(errors="ignore") for p in sorted(self.log_dir.glob("worker-*.log")))
+
+    # ------------------------------------------------------------------ metrics
+    def generation(self, service: str) -> int:
+        """How many times this service has been started: counters restart from 0 with each process."""
+        return self._api_starts if service == "api" else self._worker_starts
+
+    def metrics_text(self, service: str) -> str:
+        port = self.cfg.api_port if service == "api" else self.cfg.worker_port
+        deadline = time.time() + 30          # a just-restarted worker may not serve HTTP yet
+        while True:
+            try:
+                r = httpx.get(f"http://localhost:{port}/actuator/prometheus", timeout=5)
+                r.raise_for_status()
+                return r.text
+            except httpx.HTTPError:
+                if time.time() > deadline:
+                    raise
+                time.sleep(0.5)
 
     # ------------------------------------------------------------------ data
     def sql(self, query: str):

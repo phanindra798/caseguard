@@ -254,13 +254,31 @@ jobs:
         if: always()
         run: '[ -f load-report.md ] && cat load-report.md >> "$GITHUB_STEP_SUMMARY" || true'
 
+  alert-rules:
+    # Alert rules are code too: promtool checks their syntax and runs their unit tests
+    # (ops/prometheus/alerts.test.yml: each alert fires when it should and stays quiet when it shouldn't).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check config, check rules, unit-test rules
+        run: |
+          promtool() {
+            docker run --rm -w /rules --entrypoint promtool \
+              -v "$PWD/ops/prometheus:/rules:ro" \
+              -v "$PWD/ops/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro" \
+              prom/prometheus:v3.16.0 "$@"
+          }
+          promtool check config prometheus.yml
+          promtool check rules alerts.yml
+          promtool test rules alerts.test.yml
+
   docker-compose:
     # Builds both images and runs the full stack: request → relay → Kafka → worker → task.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - name: Start the stack
-        run: docker compose up -d --build --wait postgres kafka jaeger case-api agent
+        run: docker compose up -d --build --wait postgres kafka jaeger prometheus case-api agent
       - name: Start the worker
         run: docker compose up -d escalation-worker
       - name: End-to-end smoke test
@@ -366,4 +384,27 @@ jobs:
           docker compose ps
           docker compose logs --tail=30 jaeger
           docker compose logs --tail=30 agent
+          exit 1
+      - name: Prometheus scraped both services and loaded the alert rules
+        run: |
+          check() {
+            python3 - <<'PY'
+          import json, sys, urllib.request
+          def get(path):
+              with urllib.request.urlopen("http://localhost:9090" + path, timeout=5) as r:
+                  return json.load(r)["data"]
+          targets = {t["labels"]["job"]: t["health"] for t in get("/api/v1/targets")["activeTargets"]}
+          rules = [r for g in get("/api/v1/rules")["groups"] for r in g["rules"]]
+          done = get('/api/v1/query?query=caseguard_worker_events_total%7Boutcome%3D%22processed%22%7D')["result"]
+          backlog = get("/api/v1/query?query=caseguard_outbox_backlog_events")["result"]
+          print("targets:", targets, "| rules:", len(rules), [r["health"] for r in rules][:3],
+                "| processed:", [r["value"][1] for r in done], "| backlog:", [r["value"][1] for r in backlog])
+          ok = (targets == {"case-api": "up", "escalation-worker": "up"}
+                and len(rules) >= 7 and all(r["health"] == "ok" for r in rules)
+                and any(float(r["value"][1]) >= 1 for r in done) and backlog)
+          sys.exit(0 if ok else 1)
+          PY
+          }
+          for i in $(seq 1 20); do check && exit 0; sleep 3; done
+          docker compose logs --tail=30 prometheus
           exit 1

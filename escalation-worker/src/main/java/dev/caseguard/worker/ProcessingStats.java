@@ -9,7 +9,8 @@ import org.springframework.stereotype.Component;
 /**
  * In-memory counters per event: how often it was delivered, and how often it was skipped as a
  * duplicate. Tests use them to PROVE a redelivery happened (not just that the end state is right).
- * In production these would be Micrometer metrics.
+ * Operational counts for dashboards and alerts are in {@link WorkerMetrics} (Micrometer); these
+ * per-event counters exist for tests.
  */
 @Component
 public class ProcessingStats {

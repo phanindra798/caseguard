@@ -16,3 +16,9 @@ final:
     - {sql: "select count(*) from follow_up_tasks", equals: 1}
     - {sql: "select count(*) from processed_events", equals: 1}
   events: {min_per_escalation: 2}            # the same event really was published twice
+  metrics:
+    # One real piece of work, one skipped copy, and the restarted relay re-sent exactly one event.
+    - {service: worker, name: caseguard_worker_events_total, labels: {outcome: processed}, delta: 1}
+    - {service: worker, name: caseguard_worker_events_total, labels: {outcome: duplicate}, delta: 1}
+    - {service: api, name: caseguard_outbox_published_events_total, delta: 1}
+    - {service: api, name: caseguard_outbox_backlog_events, equals: 0}

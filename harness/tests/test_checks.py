@@ -84,3 +84,44 @@ def test_decision_checks():
 def test_db_and_events():
     assert codes(checks.check_db([{"sql": "q", "equals": 1}], lambda q: 2)) == ["DB_STATE"]
     assert codes(checks.check_events({"min_per_escalation": 2}, {"E-1": 1}, ["E-1"])) == ["EVENT_DELIVERIES"]
+
+
+# ---------------------------------------------------------------- metrics (Release 4.2)
+
+SCRAPE = """# HELP caseguard_worker_events_total Events handled by the worker, by outcome
+# TYPE caseguard_worker_events_total counter
+caseguard_worker_events_total{application="escalation-worker",outcome="processed"} 3.0
+caseguard_worker_events_total{application="escalation-worker",outcome="duplicate"} 1.0
+caseguard_outbox_backlog_events{application="case-api"} 0.0
+jvm_info{runtime="OpenJDK",vendor="x",version="21"} 1
+"""
+
+
+def test_parse_prometheus_reads_names_labels_values():
+    samples = checks.parse_prometheus(SCRAPE)
+    assert ("caseguard_worker_events_total", {"application": "escalation-worker", "outcome": "duplicate"}, 1.0) in samples
+    assert checks.metric_value(samples, "caseguard_worker_events_total") == 4.0           # summed over series
+    assert checks.metric_value(samples, "caseguard_worker_events_total", {"outcome": "processed"}) == 3.0
+    assert checks.metric_value(samples, "nope") is None
+
+
+def test_metric_delta_since_scenario_start():
+    before = checks.parse_prometheus(SCRAPE)
+    after = checks.parse_prometheus(SCRAPE.replace('"duplicate"} 1.0', '"duplicate"} 2.0'))
+    spec = [{"service": "worker", "name": "caseguard_worker_events_total", "labels": {"outcome": "duplicate"}, "delta": 1}]
+    assert checks.check_metrics(spec, {"worker": after}, {"worker": before}) == []
+    assert codes(checks.check_metrics(spec, {"worker": before}, {"worker": before})) == ["METRIC_DELTA"]
+
+
+def test_restarted_process_counts_from_zero():
+    # No baseline (the process restarted mid-scenario): the whole current value is the delta.
+    spec = [{"service": "worker", "name": "caseguard_worker_events_total", "labels": {"outcome": "duplicate"}, "delta": 1}]
+    assert checks.check_metrics(spec, {"worker": checks.parse_prometheus(SCRAPE)}, {}) == []
+
+
+def test_metric_equals_and_missing():
+    now = {"api": checks.parse_prometheus(SCRAPE)}
+    assert checks.check_metrics([{"service": "api", "name": "caseguard_outbox_backlog_events", "equals": 0}], now, {}) == []
+    assert codes(checks.check_metrics([{"service": "api", "name": "caseguard_outbox_backlog_events", "equals": 2}],
+                                      now, {})) == ["METRIC_VALUE"]
+    assert codes(checks.check_metrics([{"service": "api", "name": "missing_total", "equals": 0}], now, {})) == ["METRIC_MISSING"]

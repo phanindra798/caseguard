@@ -3,3 +3,7 @@ spring:
     url: ${TEST_DB_URL:jdbc:postgresql://localhost:5432/caseguard_worker_test}
     username: ${DB_USER:caseguard}
     password: ${DB_PASSWORD:caseguard}
+
+caseguard:
+  retention:
+    enabled: false   # tests call DedupeRetention directly

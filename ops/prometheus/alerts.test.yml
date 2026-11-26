@@ -1,0 +1,145 @@
+# promtool unit tests for alerts.yml: each alert fires when it should, and stays quiet when it
+# shouldn't. Run:  promtool test rules ops/prometheus/alerts.test.yml   (CI does this in Docker)
+rule_files:
+  - alerts.yml
+evaluation_interval: 1m
+
+tests:
+  # --- OutboxStuck: the oldest event keeps ageing from minute 2 → fires once it's been >60 s for 2 min
+  - interval: 1m
+    input_series:
+      - series: 'caseguard_outbox_oldest_unpublished_age_seconds{application="case-api",instance="case-api:8081",job="case-api"}'
+        values: '0 0.4 30 90 150 210 270 330 390'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: OutboxStuck
+        exp_alerts: []                     # condition true, but not for 2 minutes yet (pending)
+      - eval_time: 6m
+        alertname: OutboxStuck
+        exp_alerts:
+          - exp_labels: {application: case-api, severity: page}
+            exp_annotations:
+              summary: Escalation events are not leaving the outbox
+              runbook: docs/OPERATIONS.md#outboxstuck
+
+  # --- A busy but HEALTHY outbox (events always under a second old) never pages
+  - interval: 1m
+    input_series:
+      - series: 'caseguard_outbox_oldest_unpublished_age_seconds{application="case-api",instance="case-api:8081",job="case-api"}'
+        values: '0.2 0.9 0.5 0.8 0.3 0.7 0.4 0.6 0.2 0.9 0.5'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: OutboxStuck
+        exp_alerts: []
+
+  # --- OutboxRelayErrors: failures every minute for 5+ minutes
+  - interval: 1m
+    input_series:
+      - series: 'caseguard_outbox_relay_failures_total{application="case-api",instance="case-api:8081",job="case-api"}'
+        values: '0 0 5 10 15 20 25 30 35 40 45 50'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: OutboxRelayErrors
+        exp_alerts:
+          - exp_labels: {application: case-api, severity: ticket}
+            exp_annotations:
+              summary: The outbox relay keeps failing to publish
+              runbook: docs/OPERATIONS.md#outboxrelayerrors
+
+  # --- WorkerDeadLetters: one poison message at minute 3 → ticket right away, quiet again 15 min later
+  - interval: 1m
+    input_series:
+      - series: 'caseguard_worker_events_total{application="escalation-worker",outcome="dead_lettered",instance="w:8082",job="escalation-worker"}'
+        values: '0 0 0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1'
+      - series: 'caseguard_worker_events_total{application="escalation-worker",outcome="processed",instance="w:8082",job="escalation-worker"}'
+        values: '0+10x24'                  # normal work does not trigger it
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: WorkerDeadLetters
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: WorkerDeadLetters
+        exp_alerts:
+          - exp_labels: {application: escalation-worker, severity: ticket}
+            exp_annotations:
+              summary: An event was sent to the dead-letter topic and needs a human
+              runbook: docs/OPERATIONS.md#workerdeadletters
+      - eval_time: 24m
+        alertname: WorkerDeadLetters
+        exp_alerts: []
+
+  # --- PipelineSlow: every event lands in the 30–60 s bucket → p95 ≈ 58 s for 10+ minutes
+  - interval: 1m
+    input_series:
+      - series: 'caseguard_worker_event_lag_seconds_bucket{application="escalation-worker",le="5.0",instance="w:8082",job="escalation-worker"}'
+        values: '0x30'
+      - series: 'caseguard_worker_event_lag_seconds_bucket{application="escalation-worker",le="30.0",instance="w:8082",job="escalation-worker"}'
+        values: '0x30'
+      - series: 'caseguard_worker_event_lag_seconds_bucket{application="escalation-worker",le="60.0",instance="w:8082",job="escalation-worker"}'
+        values: '0+10x30'
+      - series: 'caseguard_worker_event_lag_seconds_bucket{application="escalation-worker",le="+Inf",instance="w:8082",job="escalation-worker"}'
+        values: '0+10x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: PipelineSlow
+        exp_alerts:
+          - exp_labels: {application: escalation-worker, severity: page}
+            exp_annotations:
+              summary: Escalations take more than 30 s to reach the support queue (p95)
+              runbook: docs/OPERATIONS.md#pipelineslow
+
+  # --- ...and a fast pipeline (everything under 5 s) does not page
+  - interval: 1m
+    input_series:
+      - series: 'caseguard_worker_event_lag_seconds_bucket{application="escalation-worker",le="5.0",instance="w:8082",job="escalation-worker"}'
+        values: '0+10x30'
+      - series: 'caseguard_worker_event_lag_seconds_bucket{application="escalation-worker",le="+Inf",instance="w:8082",job="escalation-worker"}'
+        values: '0+10x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: PipelineSlow
+        exp_alerts: []
+
+  # --- WorkerFallingBehind: lag above 1000 for 10+ minutes
+  - interval: 1m
+    input_series:
+      - series: 'kafka_consumer_fetch_manager_records_lag_max{application="escalation-worker",client_id="c-1",instance="w:8082",job="escalation-worker"}'
+        values: '0 500 1500+100x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: WorkerFallingBehind
+        exp_alerts:
+          - exp_labels: {application: escalation-worker, severity: ticket}
+            exp_annotations:
+              summary: The worker is more than 1000 messages behind
+              runbook: docs/OPERATIONS.md#workerfallingbehind
+
+  # --- DedupeRetentionBlocked: the job skipped a run as unsafe
+  - interval: 1m
+    input_series:
+      - series: 'caseguard_retention_skipped_total{application="escalation-worker",table="processed_events",reason="unsafe",instance="w:8082",job="escalation-worker"}'
+        values: '0 0 1 1 1'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: DedupeRetentionBlocked
+        exp_alerts:
+          - exp_labels: {application: escalation-worker, reason: unsafe, severity: ticket}
+            exp_annotations:
+              summary: Dedupe retention is not running because it would be unsafe
+              runbook: docs/OPERATIONS.md#deduperetentionblocked
+
+  # --- ServiceDown: the worker stops answering scrapes at minute 2
+  - interval: 1m
+    input_series:
+      - series: 'up{job="escalation-worker",instance="escalation-worker:8082"}'
+        values: '1 1 0 0 0 0 0'
+      - series: 'up{job="case-api",instance="case-api:8081"}'
+        values: '1 1 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels: {job: escalation-worker, instance: "escalation-worker:8082", severity: page}
+            exp_annotations:
+              summary: A CaseGuard service cannot be scraped
+              runbook: docs/OPERATIONS.md#servicedown

@@ -1576,6 +1576,20 @@ Model names are **placeholders until we verify what's available and affordable**
 | Measurement hygiene | Three runs per configuration; medians and ranges | A single run showed a 3.5× p95 gain that repeats didn't confirm |
 | CI gate | The load-test job gates on invariants only | Latency on shared runners is too noisy to gate on |
 
+### Implementation notes from Release 4.2 (operations)
+
+| Topic | What was built | Why |
+|---|---|---|
+| Outbox gauges | `caseguard_outbox_backlog_events` and `caseguard_outbox_oldest_unpublished_age_seconds`, queried on scrape through the partial index | The **age of the oldest** event separates "busy" from "stuck"; the backlog alone can't |
+| Truthful counters | `published` counted after commit; `processed` / `duplicate` / `dead_lettered` per outcome; empty relay polls not timed | A dashboard is a claim too: no counting work that rolled back |
+| Lag histogram | `caseguard_worker_event_lag_seconds`: outbox write → task created | The delay a customer feels; ready for an SLO |
+| No custom health check | Metrics and alerts only; health stays "is the process alive" | A DOWN-on-backlog health check makes orchestrators restart healthy services during a Kafka blip |
+| Alert rules as code | 7 rules (`page` / `ticket`) with runbooks; `promtool test rules` proves each one fires, and stays quiet in a healthy look-alike | Untested alerts either never fire or page for nothing |
+| Outbox retention | Published rows deleted after 7 days in batches of 1,000 (`FOR UPDATE SKIP LOCKED`), bounded per run; unpublished rows never | Short transactions, no lock storms, safe with several instances |
+| Dedupe retention guard | Before each run, ask the broker for `retention.ms`, `segment.ms` and `cleanup.policy`; delete only if dedupe retention > retention + segment + margin; unknown = don't delete | Kafka retention is a minimum: messages live up to retention + segment (default 14 days, not 7) |
+| Harness metric checks | S04/S05 assert the services' own counters, with restart-aware deltas | The dashboards must agree with what really happened during a crash |
+| Overhead | Load test, 4.1 and 4.2 jars, same machine and day: 171–188 vs 190–195 req/s | No measurable cost; also a reminder that machines differ between days |
+
 ### Second review: code corrections
 
 | Review point | Bug in the old code | Fix | Where |
@@ -1607,7 +1621,9 @@ Model names are **placeholders until we verify what's available and affordable**
    - The relay becomes a bottleneck: run several relays with `SKIP LOCKED`, batch, or switch to CDC.
    - Partition by case ID.
    - Status polling load grows: back off, or push status updates.
-   - The `processed_events` table grows: add retention or TTL.
+   - The `processed_events` table grows: retention, but only once no copy of the event can still be in Kafka (Release 4.2).
+5a. *How do you know the pipeline is healthy in production?* Alert on the age of the oldest unpublished outbox event (busy vs stuck), dead letters, end-to-end lag p95 and consumer lag. Each alert has a runbook and a promtool unit test.
+5b. *When can you delete deduplication records?* Only when the message can't be delivered again: older than the topic's maximum message lifetime (retention.ms + segment.ms, because Kafka deletes whole segments), plus a margin. Check the broker's real settings before every run, and treat "unknown" as "don't delete".
 5. *How do you keep tenants isolated?* Trusted identity, ownership in every query, 404, tests with two tenants. Guardrails are defense in depth, not the boundary.
 
 **AI engineering**

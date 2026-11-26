@@ -1,5 +1,6 @@
 package dev.caseguard.worker;
 
+import java.time.Duration;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,9 +31,11 @@ public class EscalationRequestedListener {
   private final FailPoints failPoints;
   private final ProcessingStats stats;
   private final JsonMapper json;
+  private final WorkerMetrics metrics;
 
   public EscalationRequestedListener(EscalationHandler handler, FailPoints failPoints,
-                                     ProcessingStats stats, JsonMapper json) {
+                                     ProcessingStats stats, JsonMapper json, WorkerMetrics metrics) {
+    this.metrics = metrics;
     this.handler = handler;
     this.failPoints = failPoints;
     this.stats = stats;
@@ -44,11 +47,15 @@ public class EscalationRequestedListener {
     EscalationRequestedEvent ev = EscalationRequestedEvent.parse(record.value(), json);
     stats.delivered(ev.eventId());
 
+    long start = System.nanoTime();
     EscalationHandler.Outcome outcome = handler.process(ev);          // 1. DB commit
+    Duration handlerTime = Duration.ofNanos(System.nanoTime() - start);
     if (outcome == EscalationHandler.Outcome.DUPLICATE) {
       stats.duplicateSkipped(ev.eventId());
+      metrics.duplicate(handlerTime);
       log.info("duplicate event {} skipped (escalation {})", ev.eventId(), ev.escalationId());
     } else {
+      metrics.processed(handlerTime, ev.occurredAt());
       log.info("event {} processed: follow-up task created for escalation {}", ev.eventId(), ev.escalationId());
     }
 

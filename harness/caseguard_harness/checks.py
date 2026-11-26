@@ -7,11 +7,13 @@
   WRONG_SUBJECT     a claim about a different case than the one discussed
   TEXT_OVERCLAIM    the words say "done" but the structured claims don't
   DB_*, EVENT_*, LOG_*  the real system's state after the conversation
+  METRIC_*          what the services' /actuator/prometheus reported (do the dashboards tell the truth?)
 
 Evidence comes from the agent's tool layer (real API responses), never from the LLM.
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime
 
 STATUS_FOR_CLAIM = {"escalation_completed": "COMPLETED", "escalation_pending": "REQUESTED"}
@@ -119,6 +121,48 @@ def check_events(spec: dict, deliveries_by_key: dict[str, int], escalation_ids: 
 
 def check_logs(spec: dict, worker_log: str) -> list[str]:
     return [f"LOG_MISSING: worker log should contain '{p}'" for p in spec.get("contains", []) if p not in worker_log]
+
+
+_SAMPLE = re.compile(r'^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{(.*)\})?\s+(\S+)')
+_LABEL = re.compile(r'(\w+)="((?:[^"\\]|\\.)*)"')
+
+
+def parse_prometheus(text: str) -> list[tuple[str, dict, float]]:
+    """Prometheus text format → [(metric name, labels, value)]. Comments and blank lines skipped."""
+    samples = []
+    for line in text.splitlines():
+        m = _SAMPLE.match(line)
+        if not m or line.startswith("#"):
+            continue
+        samples.append((m.group(1), dict(_LABEL.findall(m.group(2) or "")), float(m.group(3))))
+    return samples
+
+
+def metric_value(samples: list[tuple[str, dict, float]], name: str, labels: dict | None = None) -> float | None:
+    """Sum of every series of `name` whose labels include `labels` (None if there is no such series)."""
+    want = {k: str(v) for k, v in (labels or {}).items()}
+    found = [v for n, ls, v in samples if n == name and want.items() <= ls.items()]
+    return sum(found) if found else None
+
+
+def check_metrics(specs: list[dict], current: dict, baseline: dict) -> list[str]:
+    """`equals`: the value now. `delta`: the increase since the scenario started. A process that was
+    restarted during the scenario started again from 0, so its baseline is empty (see the runner)."""
+    errors = []
+    for s in specs:
+        svc, name, labels = s["service"], s["name"], s.get("labels")
+        now = metric_value(current.get(svc, []), name, labels)
+        label = f"{svc} {name}{labels or ''}"
+        if now is None:
+            errors.append(f"METRIC_MISSING: {label} is not exported")
+            continue
+        if "equals" in s and now != s["equals"]:
+            errors.append(f"METRIC_VALUE: {label} expected {s['equals']}, got {now}")
+        if "delta" in s:
+            delta = now - (metric_value(baseline.get(svc, []), name, labels) or 0)
+            if delta != s["delta"]:
+                errors.append(f"METRIC_DELTA: {label} expected +{s['delta']} during the scenario, got +{delta}")
+    return errors
 
 
 def check_trace(spec: dict, traces: dict[str, list[dict]]) -> list[str]:

@@ -1,0 +1,78 @@
+# CaseGuard alert rules. Each alert answers "what must a human do?" and links to its runbook in
+# docs/OPERATIONS.md. Unit-tested with promtool (alerts.test.yml), which CI runs on every push.
+#
+# severity: page   → someone acts now (customers are waiting or work is being lost)
+# severity: ticket → fix during working hours (nothing is lost yet, but it will get worse)
+groups:
+  - name: caseguard-pipeline
+    rules:
+      - alert: OutboxStuck
+        # The relay normally publishes within a second. An event waiting over a minute means the relay
+        # or Kafka is stuck: escalations are accepted but no follow-up task will be created.
+        expr: max by (application) (caseguard_outbox_oldest_unpublished_age_seconds) > 60
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: Escalation events are not leaving the outbox
+          runbook: docs/OPERATIONS.md#outboxstuck
+
+      - alert: OutboxRelayErrors
+        # The cause behind most OutboxStuck pages (broker down, timeouts). Alone, it can be a blip.
+        expr: sum by (application) (increase(caseguard_outbox_relay_failures_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: The outbox relay keeps failing to publish
+          runbook: docs/OPERATIONS.md#outboxrelayerrors
+
+      - alert: WorkerDeadLetters
+        # A message the worker can never process was parked in <topic>.DLT. Nothing retries it.
+        expr: sum by (application) (increase(caseguard_worker_events_total{outcome="dead_lettered"}[15m])) > 0
+        labels:
+          severity: ticket
+        annotations:
+          summary: An event was sent to the dead-letter topic and needs a human
+          runbook: docs/OPERATIONS.md#workerdeadletters
+
+      - alert: PipelineSlow
+        # p95 from "event written to the outbox" to "follow-up task created". Load test p95 is ~1 s.
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le, application) (rate(caseguard_worker_event_lag_seconds_bucket[5m]))) > 30
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: Escalations take more than 30 s to reach the support queue (p95)
+          runbook: docs/OPERATIONS.md#pipelineslow
+
+      - alert: WorkerFallingBehind
+        # Kafka's own view: messages waiting for the worker. Grows when the worker is too slow or stuck.
+        expr: max by (application) (kafka_consumer_fetch_manager_records_lag_max{application="escalation-worker"}) > 1000
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: The worker is more than 1000 messages behind
+          runbook: docs/OPERATIONS.md#workerfallingbehind
+
+      - alert: DedupeRetentionBlocked
+        # The retention job refused to delete dedupe rows because Kafka could still redeliver them.
+        # Safe (no duplicates), but processed_events grows until the settings are aligned.
+        expr: sum by (application, reason) (increase(caseguard_retention_skipped_total{table="processed_events"}[3h])) > 0
+        labels:
+          severity: ticket
+        annotations:
+          summary: Dedupe retention is not running because it would be unsafe
+          runbook: docs/OPERATIONS.md#deduperetentionblocked
+
+      - alert: ServiceDown
+        expr: up{job=~"case-api|escalation-worker"} == 0
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: A CaseGuard service cannot be scraped
+          runbook: docs/OPERATIONS.md#servicedown

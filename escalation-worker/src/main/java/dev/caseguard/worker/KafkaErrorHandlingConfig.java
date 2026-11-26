@@ -1,7 +1,9 @@
 package dev.caseguard.worker;
 
+import java.time.Duration;
 import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.config.TopicConfig;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -26,19 +28,29 @@ import org.springframework.util.backoff.FixedBackOff;
 public class KafkaErrorHandlingConfig {
 
   @Bean
-  DefaultErrorHandler errorHandler(KafkaTemplate<Object, Object> template) {
+  DefaultErrorHandler errorHandler(KafkaTemplate<Object, Object> template, WorkerMetrics metrics) {
     // Sends to "<original topic>.DLT", same partition number. Set explicitly instead of relying on
     // the library default, which changed between Spring Kafka versions (".DLT" → "-dlt").
     DeadLetterPublishingRecoverer toDeadLetter = new DeadLetterPublishingRecoverer(template,
         (record, ex) -> new TopicPartition(record.topic() + ".DLT", record.partition()));
-    DefaultErrorHandler handler = new DefaultErrorHandler(toDeadLetter, new FixedBackOff(500L, 4L));
+    DefaultErrorHandler handler = new DefaultErrorHandler((record, ex) -> {
+      toDeadLetter.accept(record, ex);
+      metrics.deadLettered();                     // counted only once the dead-letter publish worked
+    }, new FixedBackOff(500L, 4L));
     handler.addNotRetryableExceptions(InvalidEventException.class);
+    handler.setRetryListeners((record, ex, attempt) -> metrics.deliveryFailed());
     return handler;
   }
 
   @Bean
-  NewTopic escalationRequestedTopic(@Value("${caseguard.topics.escalation-requested}") String name) {
-    return TopicBuilder.name(name).partitions(3).replicas(1).build();
+  NewTopic escalationRequestedTopic(@Value("${caseguard.topics.escalation-requested}") String name,
+                                    @Value("${caseguard.topics.retention:P7D}") Duration retention,
+                                    @Value("${caseguard.topics.segment:P1D}") Duration segment) {
+    // Same settings as the Case API declares (whichever service starts first creates the topic).
+    return TopicBuilder.name(name).partitions(3).replicas(1)
+        .config(TopicConfig.RETENTION_MS_CONFIG, String.valueOf(retention.toMillis()))
+        .config(TopicConfig.SEGMENT_MS_CONFIG, String.valueOf(segment.toMillis()))
+        .build();
   }
 
   @Bean

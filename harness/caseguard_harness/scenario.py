@@ -123,6 +123,11 @@ class ScenarioRunner:
         return self.agent.resume(conversation, {"approval_id": approval["id"]})
 
     # ------------------------------------------------------------------ kafka
+    def _metrics_snapshot(self, services: set[str]) -> dict[str, tuple[int, list]]:
+        """{service: (process generation, parsed samples)} for the services a scenario checks."""
+        return {svc: (self.stack.generation(svc), checks.parse_prometheus(self.stack.metrics_text(svc)))
+                for svc in services}
+
     def _deliveries_by_key(self) -> dict[str, int]:
         c = Consumer({"bootstrap.servers": self.stack.cfg.kafka, "group.id": f"harness-reader-{uuid.uuid4()}",
                       "enable.auto.commit": False})
@@ -159,6 +164,8 @@ class ScenarioRunner:
         self.stack.reset()
         if self.stack.worker is None or self.stack.worker.poll() is not None:
             self.stack.start_worker()
+        metric_specs = sc.get("final", {}).get("metrics", [])
+        metric_baseline = self._metrics_snapshot({m["service"] for m in metric_specs})
         try:
             for a in sc.get("setup", []):
                 self._act(a)
@@ -208,6 +215,12 @@ class ScenarioRunner:
             if "events" in final:
                 escalations = self.stack.sql("select coalesce(array_agg(id::text), '{}') from escalations")
                 failures += checks.check_events(final["events"], self._deliveries_by_key(), list(escalations))
+            if metric_specs:
+                now = self._metrics_snapshot({m["service"] for m in metric_specs})
+                # A service restarted during the scenario counts from 0 again: compare with nothing.
+                base = {svc: samples for svc, (gen, samples) in metric_baseline.items()
+                        if gen == now[svc][0]}
+                failures += checks.check_metrics(metric_specs, {svc: s for svc, (_, s) in now.items()}, base)
             if "worker_log" in final:
                 failures += checks.check_logs(final["worker_log"], self.stack.worker_logs())
             if "trace" in final:

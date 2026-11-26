@@ -67,10 +67,13 @@ def main(argv: list[str] | None = None) -> int:
     scenarios = [s for s in load_scenarios() if not args.k or any(s["id"].startswith(k) for k in args.k)]
     stack = Stack(otlp_endpoint=collector.endpoint if collector else None)
     print(f"starting stack (db {stack.cfg.database}, topic {stack.cfg.topic}, logs {stack.log_dir})", flush=True)
-    stack.start()
-    proxy = FaultProxy(stack.api_url).start()
     results = []
+    proxy = None
     try:
+        # Inside the try: if startup fails half-way, the processes already started are still stopped
+        # (otherwise an orphaned JVM keeps its port and breaks the next run).
+        stack.start()
+        proxy = FaultProxy(stack.api_url).start()
         runner = ScenarioRunner(stack, proxy, collector)
         for sc in scenarios:
             r = runner.run(sc)
@@ -80,7 +83,8 @@ def main(argv: list[str] | None = None) -> int:
             for f in r.failures:
                 print(f"        - {f}", flush=True)
     finally:
-        proxy.stop()
+        if proxy:
+            proxy.stop()
         stack.stop()
 
     args.report.write_text(render_report(results))

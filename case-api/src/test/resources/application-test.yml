@@ -11,3 +11,5 @@ spring:
 caseguard:
   relay:
     enabled: false   # tests call OutboxRelay.relayBatch() directly, so timing is deterministic
+  retention:
+    enabled: false   # same for the retention job

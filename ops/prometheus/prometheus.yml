@@ -1,0 +1,18 @@
+# Prometheus for the Docker Compose stack: scrapes both services and loads the alert rules.
+# Open http://localhost:9090 → Graph (metrics) or Alerts.
+global:
+  scrape_interval: 5s          # short for a demo; 15–30 s is usual in production
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  - job_name: case-api
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["case-api:8081"]
+  - job_name: escalation-worker
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["escalation-worker:8082"]

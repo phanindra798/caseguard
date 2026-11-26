@@ -24,6 +24,10 @@ answer to those four problems.
   retries racing their originals) found the outbox relay waiting for Kafka one message at a time; batching
   cut end-to-end lag p50 from **3.9 s to 0.16 s** (p95 6.2 s → ~1.1 s) with every invariant intact
   ([`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)).
+- **Operable, not just correct.** Prometheus metrics for outbox age, worker outcomes and pipeline lag; 7 alert
+  rules with `promtool` unit tests; retention jobs, including a dedupe cleanup that asks the broker before
+  deleting, because Kafka keeps messages up to `retention.ms + segment.ms`, not `retention.ms`
+  ([`docs/OPERATIONS.md`](docs/OPERATIONS.md)).
 - **Measured, not assumed.** 105 labelled conversations with a holdout split, an error taxonomy and one fix
   measured on both splits (dev 92% → **100%**, holdout 70% → **85%**); 20 fault-injection scenarios against
   the real stack, including **one OpenTelemetry trace** from the agent through Kafka to the worker.
@@ -41,6 +45,7 @@ flowchart LR
     W --> DB
     A -. "conversation state" .-> DB
     A & API & W -. "OpenTelemetry" .-> J["Jaeger"]
+    P["Prometheus<br/>metrics · alerts"] -. "scrapes" .-> API & W
     H["Harness · faults · evaluation"] -. "drives & checks" .-> A
 ```
 
@@ -59,6 +64,8 @@ decides *what is allowed and what is true*; the harness checks both.
 | Expensive actions need a human | Approval bound to operation, case version and policy, enforced by the backend; harness S12–S14, S24 |
 | Injected instructions don't work | Gullible test model; harness S15; evaluation category `injection_in_data` |
 | Exactly once under load, not just in unit tests | 2,000 concurrent escalations with 20% same-key retries → 2,000 escalations, events and tasks (`make loadtest`; CI job `load-test`) |
+| Dashboards tell the truth, alerts fire when they should | Harness S04/S05 check the services' own metrics during crashes; `promtool test rules` proves each alert fires and stays quiet in a healthy look-alike (CI job `alert-rules`) |
+| Cleanup never breaks exactly-once | Dedupe retention refuses broker defaults (7 d + 7 d segments), infinite retention, compaction and unknown topics, tested against a real broker (`WorkerOperationsTest`) |
 | Retrieval quality is measured | 24 labelled queries: keyword 21/24 vs semantic model 19/24 vs hybrid 21/24 (`evals/README.md`) |
 
 ## Quickstart
@@ -78,11 +85,13 @@ make chat
 ```
 
 Try *"Order 1042 is late, please escalate it."*, then *"Order 1099 is late too"* and type `/approve`.
-Then open Jaeger at http://localhost:16686 (service `caseguard-agent`) to see that conversation as one trace.
-Run everything that CI runs: `make test`, `make harness-tracing`, `make eval`, `make loadtest`, `make demo-worker`.
+Then open Jaeger at http://localhost:16686 (service `caseguard-agent`) to see that conversation as one trace,
+and Prometheus at http://localhost:9090 (try `caseguard_worker_events_total`, or the Alerts tab).
+Run everything that CI runs: `make test`, `make harness-tracing`, `make eval`, `make loadtest`, `make alert-rules`,
+`make demo-worker`.
 
 **Stack:** Java 21 · Spring Boot 4 · PostgreSQL 16 + pgvector · Apache Kafka 4 (KRaft) · Python 3.12 ·
-LangGraph · FastAPI · OpenTelemetry + Jaeger · Docker Compose · GitHub Actions (8 jobs).
+LangGraph · FastAPI · OpenTelemetry + Jaeger · Micrometer + Prometheus · Docker Compose · GitHub Actions (9 jobs).
 
 **Honest limits:** every evaluation number comes from a deterministic scripted agent and deliberately bad
 test models; there is no live-model result yet (the opt-in *Live model evaluation* workflow runs one when an
@@ -427,13 +436,15 @@ Every request must carry `X-Tenant-Id` and `X-Customer-Id` (set from the trusted
 
 | Test | Proof |
 |---|---|
-| Ownership (10) | Other tenants' and other customers' data is invisible; "not yours" looks exactly like "doesn't exist"; the DB rejects cross-tenant rows |
+| Ownership (11) | Other tenants' and other customers' data is invisible; "not yours" looks exactly like "doesn't exist"; the DB rejects cross-tenant rows |
 | Escalation API (12) | New → 202 with 1 escalation + 1 outbox event; same key → 200 replay with **no** extra rows; other key → 409; key reuse on another case → 409; failed escalations allow a retry |
 | Concurrency (6) | **20 simultaneous identical requests → exactly 1 escalation and 1 event**; 20 competing requests → one 202, nineteen 409 |
 | Atomicity (1) | A forced failure *after* the escalation insert rolls back everything; a retry with the same key then succeeds |
 | Contract (1) | The served OpenAPI spec equals the committed `openapi.json` |
+| Operations, Case API (6) | Retention deletes only old **published** outbox rows, in bounded batches; backlog and oldest-age gauges drop to 0 after the relay; counters move only after commit; `/actuator/prometheus` serves them |
 | Outbox relay (3) | Events reach Kafka carrying their event id; a crash after publish re-sends the **same** id; 4 relays at once never double-publish (`FOR UPDATE SKIP LOCKED`) |
 | Worker (7) | One event → one task; duplicate delivery skipped; crash after commit → redelivered and skipped; crash before commit → rolled back and redone; poison message → dead-letter topic without blocking the partition; wrong tenant rejected; `UNIQUE(escalation_id)` as the last safety net |
+| Operations, worker (9) | Topic lifetime read from the broker (retention + segment); old dedupe rows deleted, recent kept, dedupe still works after a purge; refuses broker defaults, infinite retention, compaction, unknown topic; outcome counters and lag histogram |
 | Crash demos (2) | Real JVM kills of the worker and the relay; exactly one task afterwards |
 | Agent scenarios (18) | Happy path; not eligible; worker down → "pending"; timeout → retry with the **same** operation id; all retries time out → **reconcile** finds the write, no fallback; confirmed not created; still unknown → honest "couldn't confirm"; ambiguous → asks, then proceeds; no unnecessary questions; second case gets a **new** id and another case's proof is never used; already escalated; approval needed; other tenant → 404; prompt injection; LLM can't call write tools or change identity; step budget; over-claiming model caught |
 | Approvals, Java (14) | Bound to operation, case version and policy; replay; stale case version refused; supervisors scoped to their tenant and can decide once; expiry; the escalation endpoint refuses missing, pending, rejected, expired, foreign, wrong-operation, wrong-case-version and wrong-policy approvals |
@@ -444,11 +455,11 @@ Every request must carry `X-Tenant-Id` and `X-Customer-Id` (set from the trusted
 | Retrieval (7) | Filters always hold for every index; default quality can't regress below 21/24; pgvector gives the same answers as the in-memory reference; a non-escalation policy is never used for eligibility |
 | Evaluation (7) | Quality gate (dev 100%, holdout ≥ 17/20, 0 unsafe writes / false success / false blocks); the eval can tell good from bad brains; the guard removes false success for every bad brain; dataset well-formed; Cohen's kappa; judge calibration doesn't regress |
 | Agent units (6) | Business days skip weekends and holidays; expired policy never chosen; region filter beats keyword match |
-| Harness checkers, fault proxy, trace collector (18) | Unsupported, late or wrong-subject claims; text over-claims; tool order, counts and operation ids; decisions; DB and event checks; the fault proxy really forwards, loses and refuses |
+| Harness checkers, fault proxy, trace collector (22) | Unsupported, late or wrong-subject claims; text over-claims; tool order, counts and operation ids; decisions; DB, event and metric checks (restart-aware deltas); the fault proxy really forwards, loses and refuses |
 | Harness scenarios (20) | The full list above, against the real stack with real faults and tracing |
 | Agent end-to-end (5) | Against the **real** Case API + Kafka + worker: escalation verified `REQUESTED → COMPLETED`; second conversation gets `already_open`; decline; cross-tenant 404; ambiguity uses the real order list |
 
-Tests were also verified by **breaking the code on purpose**: removing the ownership filter fails 4 tests; disabling the worker's dedupe fails the duplicate and crash tests; reusing one operation id for a whole conversation fails the two-case test; a new id per retry fails both retry tests; skipping the case-version re-check after the pause fails S13; removing the backend's approval guard fails 7 tests; disabling the per-turn fact refresh fails S17; turning the output guard off fails the injection and S25 tests; and removing the Java "already open" check still passes because the **database's partial unique index** blocks duplicates on its own.
+Tests were also verified by **breaking the code on purpose**: removing the ownership filter fails 4 tests; disabling the worker's dedupe fails the duplicate and crash tests; reusing one operation id for a whole conversation fails the two-case test; a new id per retry fails both retry tests; skipping the case-version re-check after the pause fails S13; removing the backend's approval guard fails 7 tests; disabling the per-turn fact refresh fails S17; turning the output guard off fails the injection and S25 tests; computing the topic lifetime from `retention.ms` alone fails 2 retention tests; and removing the Java "already open" check still passes because the **database's partial unique index** blocks duplicates on its own.
 
 ## Design decisions
 
@@ -461,6 +472,8 @@ Tests were also verified by **breaking the code on purpose**: removing the owner
 - **Poison messages go to a dead-letter topic** instead of being retried forever and blocking the partition.
 - **Apache Kafka 4 in KRaft mode** (no ZooKeeper): the official image runs as a single node locally and in CI.
 - **Fail points.** Named spots in the code where tests can force a crash at an exact moment.
+- **Alert on the age of the oldest unpublished event, not the backlog.** A big backlog can be healthy; an old event never is.
+- **Retention that asks the broker.** A dedupe row is deleted only when no copy of its event can still be in Kafka. Unknown counts as unsafe.
 - **Flyway owns the schema; Hibernate only validates it.** Money is integer cents. Demo data is kept separate from migrations.
 
 ## Build log
@@ -477,3 +490,4 @@ Tests were also verified by **breaking the code on purpose**: removing the owner
 | 3.1 | Evaluation: 105 labelled conversations (dev + holdout), metrics with denominators, error taxonomy, one measured improvement, judge calibration, opt-in live-model runs | ✅ Done |
 | 3.2 | Token and cost accounting (real counts from live responses, clearly-labelled estimates for the scripted agent), portfolio README | ✅ Done |
 | 4.1 | Load test of the real pipeline; relay batching (publish lag ~30× lower) and worker concurrency, measured with repeated runs | ✅ Done |
+| 4.2 | Operations: Prometheus metrics, 7 unit-tested alert rules with runbooks, retention jobs with a broker-checked dedupe guard, metric checks in the harness | ✅ Done |

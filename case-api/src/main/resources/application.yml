@@ -26,6 +26,9 @@ spring:
 caseguard:
   topics:
     escalation-requested: escalation.requested
+    # Set on the topic when it is created. The worker's dedupe retention is checked against these.
+    retention: P7D           # Kafka keeps a message at least this long...
+    segment: P1D             # ...and at most about retention + segment (a segment is deleted whole)
   approval:
     over-cents: 50000      # orders above $500 need a supervisor's approval (per-tenant config in a real system)
     ttl-hours: 24
@@ -33,12 +36,21 @@ caseguard:
     enabled: ${RELAY_ENABLED:true}
     interval-ms: 200
     batch-size: 100
+  retention:
+    enabled: ${RETENTION_ENABLED:true}
+    interval: PT1H
+    outbox-published: P7D    # published outbox rows are kept a week for debugging, then deleted
+    batch-size: 1000
+    max-batches-per-run: 100
 
 management:
   endpoints:
     web:
       exposure:
-        include: health
+        include: health,prometheus
+  metrics:
+    tags:
+      application: ${spring.application.name}
 
 server:
   port: ${PORT:8081}

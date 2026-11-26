@@ -46,10 +46,24 @@ Overall: end-to-end p50 **3.9 s → 0.16 s**, p95 **6.2 s → ~1.1 s**, with eve
 gain. Two repeats gave 1,151 and 1,103 ms. On a shared machine p95 is noisy: compare distributions of
 repeated runs, not single numbers. The relay change is a clear win; the worker change is a real but modest one.
 
+## Cost of the metrics (Release 4.2)
+
+Release 4.2 added Micrometer metrics on the request, relay and worker paths. Measured the same way (1,000
+escalations, concurrency 50), with the 4.1 and 4.2 jars run on the same machine on the same day:
+
+| Build | Throughput (2 runs) | End-to-end p95 (2 runs) |
+|---|---|---|
+| 4.1 (no Prometheus registry) | 171, 188 req/s | 1,187, 1,128 ms |
+| 4.2 (metrics on) | 190, 195 req/s | 1,276, 1,073 ms |
+
+No measurable overhead. Both are below the 4.1 report's 242 req/s, which was measured on a different day: the
+machine was slower, not the code. A before/after comparison needs both builds on the same machine at the same time.
+
 ## Next bottlenecks (not done)
 
 - API latency p95 ~0.6–0.8 s at concurrency 50 on 4 shared CPUs: profile the request path (connection pool
   size, Hibernate flushes) on a machine where the load generator doesn't compete for CPU.
 - The relay holds its database transaction while waiting for Kafka acks; at much higher volumes, mark rows
   in a separate short transaction, or move to change-data-capture (Debezium).
-- `processed_events` grows forever: add a retention job.
+- ~~`processed_events` grows forever: add a retention job.~~ Done in Release 4.2, with a guard that checks the
+  broker's topic settings first ([`OPERATIONS.md`](OPERATIONS.md)).

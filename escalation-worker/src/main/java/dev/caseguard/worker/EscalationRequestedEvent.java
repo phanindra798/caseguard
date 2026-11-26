@@ -1,5 +1,6 @@
 package dev.caseguard.worker;
 
+import java.time.Instant;
 import java.util.UUID;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
@@ -12,7 +13,8 @@ import tools.jackson.databind.json.JsonMapper;
  *   "payload": { "escalationId": "...", "tenantId": "...", "caseId": "...", ... } }
  * </pre>
  */
-public record EscalationRequestedEvent(UUID eventId, UUID escalationId, String tenantId, String caseId) {
+public record EscalationRequestedEvent(UUID eventId, UUID escalationId, String tenantId, String caseId,
+                                       Instant occurredAt) {
 
   public static final String TYPE = "EscalationRequested";
 
@@ -31,11 +33,22 @@ public record EscalationRequestedEvent(UUID eventId, UUID escalationId, String t
           UUID.fromString(required(root, "eventId")),
           UUID.fromString(required(p, "escalationId")),
           required(p, "tenantId"),
-          required(p, "caseId"));
+          required(p, "caseId"),
+          occurredAt(root));
     } catch (InvalidEventException e) {
       throw e;
     } catch (RuntimeException e) {   // bad JSON, bad UUID, ...
       throw new InvalidEventException("unparseable event: " + e.getMessage());
+    }
+  }
+
+  /** Only used for the lag metric, so a missing or odd timestamp is tolerated, never fatal. */
+  private static Instant occurredAt(JsonNode root) {
+    try {
+      String v = text(root, "occurredAt");
+      return v == null ? null : java.time.OffsetDateTime.parse(v).toInstant();
+    } catch (RuntimeException e) {
+      return null;
     }
   }
 

@@ -207,9 +207,14 @@ jobs:
         run: scripts/fetch-otel-agent.sh
       - name: Run all scenarios (with tracing, so S26 checks one trace across all services)
         run: python -m caseguard_harness --tracing --report harness-report.md
+      - name: Demo (the 4-act story, every check must pass; keeps docs/DEMO.md honest)
+        if: always()
+        run: python -m caseguard_harness.demo --transcript demo-transcript.md
       - name: Publish report
         if: always()
-        run: '[ -f harness-report.md ] && cat harness-report.md >> "$GITHUB_STEP_SUMMARY" || true'
+        run: |
+          [ -f harness-report.md ] && cat harness-report.md >> "$GITHUB_STEP_SUMMARY" || true
+          [ -f demo-transcript.md ] && cat demo-transcript.md >> "$GITHUB_STEP_SUMMARY" || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -217,6 +222,7 @@ jobs:
           path: |
             harness-report.md
             harness-report.json
+            demo-transcript.md
 
   load-test:
     # Gates on the INVARIANTS under load (one escalation, event and task per case; no duplicates from

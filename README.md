@@ -10,6 +10,11 @@ failed, they create duplicates when they retry after a timeout, they get quietly
 and they can be talked into things by text hidden in the data they read. CaseGuard is a complete, tested
 answer to those four problems.
 
+**See it in 90 seconds:** [`docs/DEMO.md`](docs/DEMO.md) is a real run of `make demo`, with four short
+stories against the real stack, each followed by checks against the database, Kafka and the services' metrics:
+verify before claiming, a worker crash at the worst moment, a model fooled by a hidden instruction, and a
+supervisor approval.
+
 ## In 30 seconds
 
 - **Verify before claiming.** The agent may only say what timestamped evidence from the real system supports.
@@ -87,8 +92,9 @@ make chat
 Try *"Order 1042 is late, please escalate it."*, then *"Order 1099 is late too"* and type `/approve`.
 Then open Jaeger at http://localhost:16686 (service `caseguard-agent`) to see that conversation as one trace,
 and Prometheus at http://localhost:9090 (try `caseguard_worker_events_total`, or the Alerts tab).
-Run everything that CI runs: `make test`, `make harness-tracing`, `make eval`, `make loadtest`, `make alert-rules`,
-`make demo-worker`.
+Or run the whole story with live checks: `make infra`, then `make demo` (see [`docs/DEMO.md`](docs/DEMO.md)).
+Run everything that CI runs: `make test`, `make harness-tracing`, `make demo`, `make eval`, `make loadtest`,
+`make alert-rules`, `make demo-worker`.
 
 **Stack:** Java 21 · Spring Boot 4 · PostgreSQL 16 + pgvector · Apache Kafka 4 (KRaft) · Python 3.12 ·
 LangGraph · FastAPI · OpenTelemetry + Jaeger · Micrometer + Prometheus · Docker Compose · GitHub Actions (9 jobs).
@@ -491,3 +497,4 @@ Tests were also verified by **breaking the code on purpose**: removing the owner
 | 3.2 | Token and cost accounting (real counts from live responses, clearly-labelled estimates for the scripted agent), portfolio README | ✅ Done |
 | 4.1 | Load test of the real pipeline; relay batching (publish lag ~30× lower) and worker concurrency, measured with repeated runs | ✅ Done |
 | 4.2 | Operations: Prometheus metrics, 7 unit-tested alert rules with runbooks, retention jobs with a broker-checked dedupe guard, metric checks in the harness | ✅ Done |
+| 4.3 | `make demo`: the story in four acts against the real stack, every step checked; runs in CI; transcript in `docs/DEMO.md` | ✅ Done |

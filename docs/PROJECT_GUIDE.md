@@ -1590,6 +1590,15 @@ Model names are **placeholders until we verify what's available and affordable**
 | Harness metric checks | S04/S05 assert the services' own counters, with restart-aware deltas | The dashboards must agree with what really happened during a crash |
 | Overhead | Load test, 4.1 and 4.2 jars, same machine and day: 171–188 vs 190–195 req/s | No measurable cost; also a reminder that machines differ between days |
 
+### Implementation notes from Release 4.3 (demo)
+
+| Topic | What was built | Why |
+|---|---|---|
+| `make demo` | Four acts against the real stack: verify before claiming; worker crash after commit, before ack; gullible model + injected note; supervisor approval | One command shows the whole project's point in about 90 seconds |
+| A demo that is a test | 15 checks against the database, Kafka and the services' own metrics; a failed check exits non-zero; CI runs it | A demo that can silently go wrong is worse than none |
+| Generated transcript | `docs/DEMO.md` is a copy of a real run, with replies, API calls and evidence timestamps | Reviewers see real output without running anything, and nothing in it is hand-written |
+| Readable output | UUIDs shortened like git, repeated status polls collapsed (`REQUESTED ×3 → COMPLETED`) | The story should be readable in an interview or a screen recording |
+
 ### Second review: code corrections
 
 | Review point | Bug in the old code | Fix | Where |

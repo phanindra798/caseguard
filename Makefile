@@ -1,5 +1,5 @@
 # Common commands. Run `make help` to list them.
-.PHONY: help infra up down run test test-api test-worker test-agent agent-venv e2e chat harness harness-unit harness-tracing otel-agent retrieval-eval eval judge loadtest contract demo-worker demo-relay alert-rules metrics
+.PHONY: help infra up down run test test-api test-worker test-agent agent-venv e2e chat harness harness-unit harness-tracing otel-agent retrieval-eval eval judge loadtest contract demo-worker demo-relay alert-rules metrics demo
 
 help:            ## Show this list
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  make %-12s %s\n", $$1, $$2}'
@@ -56,6 +56,9 @@ eval:            ## Evaluate the agent on 105 labelled conversations (all config
 
 judge:           ## Calibrate the (baseline) judge against the hand-labelled replies
 	cd agent && .venv/bin/python -m caseguard_agent.evaluation.judge
+
+demo:            ## The story in 4 acts against the real stack, with live checks (needs `make infra`, built jars)
+	agent/.venv/bin/python -m caseguard_harness.demo
 
 loadtest:        ## Load test the real pipeline: 2,000 escalations, 20% same-key retries (needs `make infra`, jars)
 	agent/.venv/bin/python -m caseguard_harness.loadtest --escalations 2000 --concurrency 50 --report load-report.md
